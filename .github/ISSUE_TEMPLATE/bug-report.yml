@@ -1,0 +1,96 @@
+name: 缺陷报告
+description: 使用合成或完全脱敏的信息报告可复现问题
+title: "[Bug]: "
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告。**禁止提交 Cookie、Token、请求头、完整 HAR、原始响应、提示词、回答、附件、真实用量或账号信息。**
+        安全漏洞请改用仓库的 Private Vulnerability Reporting，不要继续填写公开表单。
+
+  - type: input
+    id: extension-version
+    attributes:
+      label: 扩展版本
+      description: 可在扩展管理页或弹窗底部查看。
+      placeholder: 例如 0.3.0
+    validations:
+      required: true
+
+  - type: input
+    id: firefox-version
+    attributes:
+      label: Firefox 版本
+      placeholder: 例如 140.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-source
+    attributes:
+      label: 安装来源
+      options:
+        - Mozilla 签名版本
+        - GitHub Release 未签名 XPI（临时安装）
+        - 源码 manifest.json（临时安装）
+        - 第三方或未知构建
+    validations:
+      required: true
+
+  - type: dropdown
+    id: usage-path
+    attributes:
+      label: 使用的页面路径
+      options:
+        - /codex/settings/usage
+        - /codex/cloud/settings/analytics（legacy）
+        - 其他或不适用
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 最小复现步骤
+      description: 使用合成值说明操作；不要粘贴网络载荷或真实账号数据。
+      placeholder: |
+        1. 打开……
+        2. 点击……
+        3. 观察到……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 可附完全脱敏的错误摘要；不要附完整控制台、HAR 或原始响应。
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 其他环境信息
+      description: 操作系统、是否使用隐私窗口、相关设置等；不要填写账号身份。
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 提交确认
+      options:
+        - label: 我已搜索现有 Issue，未发现相同报告。
+          required: true
+        - label: 我已删除 Cookie、Token、HAR、对话、真实用量和账号信息。
+          required: true
+        - label: 这不是需要私密披露的安全漏洞。
+          required: true
