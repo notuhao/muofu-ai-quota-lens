@@ -11,6 +11,8 @@
 
 # Dependencies and local tooling state.
 /node_modules/
+__pycache__/
+*.py[cod]
 .cache/
 .eslintcache
 
