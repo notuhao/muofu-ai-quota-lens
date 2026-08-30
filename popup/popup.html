@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Muofu AI Quota Lens</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="masthead">
+    <div>
+      <h1>Muofu AI Quota Lens</h1>
+      <p>ChatGPT Codex 用量、重置机会与模型路由观察</p>
+    </div>
+    <span id="version" class="version"></span>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="section-heading">
+        <div>
+          <h2>Codex Credits</h2>
+          <p id="creditTimestamp" class="muted">尚无本地快照</p>
+        </div>
+        <span id="creditConfidence" class="badge neutral">—</span>
+      </div>
+
+      <div class="metrics">
+        <div class="metric"><span>本周期 Credits</span><strong id="cycleCredits">—</strong></div>
+        <div class="metric"><span>周窗口已用</span><strong id="usedPercent">—</strong></div>
+        <div class="metric"><span>推算 100%</span><strong id="quotaEstimate">—</strong></div>
+        <div class="metric"><span>套餐参考</span><strong id="referenceCredits">—</strong></div>
+      </div>
+
+      <div id="referenceNotice" class="notice neutral">打开 Usage 后进行纯被动捕获。</div>
+      <div id="historyNotice" class="notice subtle">个人历史样本不足。</div>
+
+      <section class="reset-credit-box" aria-labelledby="resetCreditTitle">
+        <div class="section-heading">
+          <div>
+            <h3 id="resetCreditTitle">Usage limit reset 机会</h3>
+            <p id="resetCreditObserved" class="muted">尚未观察到可用数量</p>
+          </div>
+          <span id="resetCreditBadge" class="badge neutral">未知</span>
+        </div>
+        <dl class="reset-credit-details">
+          <div><dt>可用数量</dt><dd id="resetCreditCount">—</dd></div>
+          <div><dt>最近已观测到期</dt><dd id="resetCreditExpiry">—</dd></div>
+        </dl>
+        <div id="resetCreditNotice" class="notice subtle" role="status">打开 Usage 页面后进行纯被动观察。</div>
+      </section>
+
+      <dl class="details">
+        <div><dt>套餐与参考来源</dt><dd id="planReference">—</dd></div>
+        <div><dt>社区参考区间</dt><dd id="referenceRange">—</dd></div>
+        <div><dt>个人历史基线</dt><dd id="baselineEstimate">—</dd></div>
+        <div><dt>周窗口重置</dt><dd id="resetAt">—</dd></div>
+        <div><dt>捕获日期范围</dt><dd id="captureRange">—</dd></div>
+        <div><dt>被动捕获状态</dt><dd id="captureState">—</dd></div>
+      </dl>
+
+      <div class="button-row">
+        <button id="captureCreditsNow" class="primary" type="button">打开 / 重载 Usage</button>
+        <button id="openDashboard" type="button">诊断台与图表</button>
+        <button id="exportData" type="button">导出 JSON</button>
+      </div>
+      <p id="creditStatus" class="status" role="status"></p>
+
+      <div class="toggle-grid">
+        <label class="toggle"><input id="captureCredits" type="checkbox"> 被动观察 Credits 响应</label>
+        <label class="toggle"><input id="showOverlay" type="checkbox"> 在 ChatGPT 页面显示浮层</label>
+      </div>
+
+      <details class="settings-box">
+        <summary>套餐参考与自定义校准</summary>
+        <div class="settings-grid">
+          <label>套餐
+            <select id="planSelection">
+              <option value="auto">自动识别</option>
+              <option value="plus">Plus</option>
+              <option value="pro5x">Pro 5x</option>
+              <option value="pro20x">Pro 20x</option>
+              <option value="business">Business</option>
+              <option value="enterprise">Enterprise</option>
+              <option value="edu">Edu</option>
+              <option value="custom">自定义套餐</option>
+            </select>
+          </label>
+          <label>参考模式
+            <select id="referenceMode">
+              <option value="community">内置社区参考</option>
+              <option value="custom">用户自定义</option>
+            </select>
+          </label>
+          <label>自定义 Credits
+            <input id="customReferenceCredits" type="number" min="1" step="0.001" inputmode="decimal" placeholder="例如 18750">
+          </label>
+          <label>自定义标签
+            <input id="customReferenceLabel" type="text" maxlength="96" placeholder="例如 2026-08 个人标准">
+          </label>
+          <label>变化提示阈值
+            <span class="input-suffix"><input id="alertThresholdPercent" type="number" min="5" max="50" step="1" inputmode="numeric"><span>%</span></span>
+          </label>
+        </div>
+        <div class="button-row compact">
+          <button id="saveReference" type="button">保存参考设置</button>
+          <button id="calibrateCurrent" type="button">以当前推算值校准</button>
+        </div>
+        <p id="referenceHelp" class="fineprint">社区参考是版本化的非官方经验值，不代表 OpenAI 保证的绝对额度。</p>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="section-heading">
+        <div>
+          <h2>ChatGPT 路由观察</h2>
+          <p id="routeTimestamp" class="muted">尚无观察记录</p>
+        </div>
+        <span id="routeBadge" class="badge neutral">字段不足</span>
+      </div>
+      <dl class="route-grid">
+        <div><dt>请求模型</dt><dd id="requestedModel">—</dd></div>
+        <div><dt>优先响应字段</dt><dd id="effectiveModel">—</dd></div>
+        <div><dt>resolved_model_slug</dt><dd id="resolvedModel">—</dd></div>
+        <div><dt>server model</dt><dd id="serverModel">—</dd></div>
+        <div><dt>assistant model</dt><dd id="assistantModel">—</dd></div>
+        <div><dt>采集来源</dt><dd id="routeSources">—</dd></div>
+      </dl>
+      <label class="toggle"><input id="routeInspection" type="checkbox"> 保存路由元数据观察</label>
+      <div class="button-row compact">
+        <button id="clearRoutes" class="danger" type="button">清空路由记录</button>
+      </div>
+      <p class="fineprint">只记录模型字段、时间、请求/会话 ID；不记录提示词、回答正文、Cookie、令牌或原始载荷。</p>
+    </section>
+
+    <section class="caveat">
+      扩展不会主动请求或消耗 Codex 用量与重置机会。捕获范围取决于 Usage 页面实际加载的数据；私有字段和路由元数据可能变化，所有结论仅供本地诊断。
+    </section>
+  </main>
+
+  <script src="../src/core.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

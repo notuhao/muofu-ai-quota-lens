@@ -1,0 +1,8 @@
+{
+  "extensionName": {
+    "message": "Muofu AI Quota Lens"
+  },
+  "extensionDescription": {
+    "message": "本地观察 ChatGPT Codex 用量、重置机会与模型路由元数据。"
+  }
+}

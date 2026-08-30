@@ -1,0 +1,8 @@
+{
+  "extensionName": {
+    "message": "Muofu AI Quota Lens"
+  },
+  "extensionDescription": {
+    "message": "Local insights into ChatGPT Codex usage, reset credits, and model-route metadata."
+  }
+}

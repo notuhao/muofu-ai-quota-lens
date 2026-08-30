@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Muofu AI Quota Lens 诊断台</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">LOCAL · PASSIVE · UNOFFICIAL</p>
+      <h1>Muofu AI Quota Lens</h1>
+      <p>ChatGPT Codex 周用量、重置机会、套餐参考与模型路由元数据</p>
+    </div>
+    <div class="hero-actions">
+      <button id="openAnalytics" class="primary" type="button">打开 / 重载 Usage</button>
+      <button id="exportJson" type="button">导出全部 JSON</button>
+      <button id="exportCsv" type="button">导出快照 CSV</button>
+      <button id="clearAll" class="danger" type="button">清空本地数据</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="summary-grid" aria-label="Credits 摘要">
+      <article class="summary"><span>本周期 Credits</span><strong id="summaryCredits">—</strong><small id="summaryCaptured">尚无快照</small></article>
+      <article class="summary"><span>周窗口已用</span><strong id="summaryUsed">—</strong><small id="summaryReset">重置：—</small></article>
+      <article class="summary"><span>推算 100% Credits</span><strong id="summaryQuota">—</strong><small id="summaryConfidence">置信度：—</small></article>
+      <article class="summary"><span>套餐参考</span><strong id="summaryReference">—</strong><small id="summaryReferenceDiff">尚未设置</small></article>
+      <article class="summary"><span>个人历史基线</span><strong id="summaryBaselineValue">—</strong><small id="summaryHistoryDiff">历史样本不足</small></article>
+      <article class="summary"><span>被动捕获</span><strong id="summaryCapture">—</strong><small id="summaryCaptureRange">等待 Usage</small></article>
+      <article class="summary"><span>周期状态</span><strong id="summaryCycleState">—</strong><small id="summaryCycleDetail">等待周期证据</small></article>
+      <article class="summary"><span>Usage limit reset</span><strong id="summaryResetCredits">—</strong><small id="summaryResetCreditExpiry">尚未观察</small></article>
+    </section>
+
+    <section class="panel settings-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">REFERENCE &amp; PRIVACY CONTROLS</p>
+          <h2>套餐参考、自定义校准与本地观察开关</h2>
+          <p>内置绝对 Credits 只是版本化社区经验；OpenAI 官方只公开套餐相对倍率，不承诺这里的绝对数字。</p>
+        </div>
+        <span id="referenceVersion" class="count">—</span>
+      </div>
+      <div class="settings-layout">
+        <form id="settingsForm" class="settings-form">
+          <label>套餐
+            <select id="planSelection">
+              <option value="auto">自动识别</option>
+              <option value="plus">Plus</option>
+              <option value="pro5x">Pro 5x</option>
+              <option value="pro20x">Pro 20x</option>
+              <option value="business">Business</option>
+              <option value="enterprise">Enterprise</option>
+              <option value="edu">Edu</option>
+              <option value="custom">自定义套餐</option>
+            </select>
+          </label>
+          <label>参考模式
+            <select id="referenceMode">
+              <option value="community">内置社区参考</option>
+              <option value="custom">用户自定义</option>
+            </select>
+          </label>
+          <label>自定义 Credits
+            <input id="customReferenceCredits" type="number" min="1" step="0.001" inputmode="decimal" placeholder="例如 18750">
+          </label>
+          <label>自定义标签
+            <input id="customReferenceLabel" type="text" maxlength="96" placeholder="例如 2026-08 个人标准">
+          </label>
+          <label>变化提示阈值
+            <span class="input-suffix"><input id="alertThresholdPercent" type="number" min="5" max="50" step="1" inputmode="numeric"><span>%</span></span>
+          </label>
+          <fieldset>
+            <legend>本地观察</legend>
+            <label class="check"><input id="captureCredits" type="checkbox"> 被动观察 Credits 响应</label>
+            <label class="check"><input id="routeInspection" type="checkbox"> 保存路由元数据观察</label>
+            <label class="check"><input id="showOverlay" type="checkbox"> 在 ChatGPT 页面显示浮层</label>
+          </fieldset>
+          <div class="form-actions">
+            <button id="saveSettings" class="solid" type="submit">保存设置</button>
+            <button id="calibrateCurrent" type="button">以当前推算值校准</button>
+            <button id="restoreCommunity" type="button">恢复社区参考</button>
+          </div>
+          <p id="settingsStatus" class="form-status" role="status"></p>
+        </form>
+
+        <div class="reference-card">
+          <h3>当前解析</h3>
+          <dl class="reference-details">
+            <div><dt>套餐</dt><dd id="resolvedPlan">—</dd></div>
+            <div><dt>识别来源</dt><dd id="resolvedPlanSource">—</dd></div>
+            <div><dt>参考名称</dt><dd id="resolvedReferenceLabel">—</dd></div>
+            <div><dt>参考区间</dt><dd id="resolvedReferenceRange">—</dd></div>
+            <div><dt>官方相对倍率</dt><dd id="resolvedMultiplier">—</dd></div>
+          </dl>
+          <p id="referenceBasis" class="note">选择套餐后显示依据。</p>
+          <h3>内置社区历史参考</h3>
+          <div class="mini-table-wrap">
+            <table class="mini-table">
+              <thead><tr><th>套餐</th><th>中心值</th><th>经验区间</th></tr></thead>
+              <tbody id="communityRows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="capture-card">
+          <h3>被动捕获健康状态</h3>
+          <div id="captureHealth" class="health neutral">等待 Usage 页面自身请求</div>
+          <dl class="reference-details">
+            <div><dt>工作模式</dt><dd>纯被动响应观察</dd></div>
+            <div><dt>限额响应</dt><dd id="usageObservedAt">—</dd></div>
+            <div><dt>按日响应</dt><dd id="dailyObservedAt">—</dd></div>
+            <div><dt>日期覆盖</dt><dd id="capturedDateRange">—</dd></div>
+            <div><dt>按日记录数</dt><dd id="capturedRowCount">—</dd></div>
+          </dl>
+          <p class="note">扩展不读取 ChatGPT Bearer Token，不构造 Authorization 头，也不会主动调用 `/backend-api/wham/*`。若页面只加载周分组，请切回“按日”视图后重载。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">RESET AWARENESS</p>
+          <h2>额度重置、套餐切换与分析边界</h2>
+          <p>显示页面已加载的重置机会及到期时间，并识别自然重置、套餐变化与窗口重排。</p>
+        </div>
+        <span id="transitionCount" class="count">0 个边界</span>
+      </div>
+      <div class="reset-credit-panel">
+        <div>
+          <h3>可用重置机会</h3>
+          <div id="resetCreditHealth" class="health neutral" role="status">尚未观察到服务端摘要</div>
+        </div>
+        <dl class="reset-credit-facts">
+          <div><dt>可用数量</dt><dd id="resetCreditCount">—</dd></div>
+          <div><dt>最近已观测到期</dt><dd id="resetCreditExpiry">—</dd></div>
+          <div><dt>数量观测时间</dt><dd id="resetCreditSummaryObserved">—</dd></div>
+          <div><dt>详情观测时间</dt><dd id="resetCreditDetailsObserved">—</dd></div>
+        </dl>
+        <p class="note">这里只复制 Usage 页面已经收到的只读摘要与详情。扩展不会主动查询或消耗重置机会；到期后也不会依据本地时钟扣减服务端数量。</p>
+      </div>
+      <div class="reset-controls">
+        <label>记录本地边界
+          <select id="cycleEventType">
+            <option value="manual_reset">主动 / 手动额度重置</option>
+            <option value="plan_change">套餐切换</option>
+            <option value="analysis_boundary">仅切断前后分析</option>
+          </select>
+        </label>
+        <button id="markCycleEvent" class="solid" type="button">记录当前时间并重载 Usage</button>
+        <button id="removeLastCycleEvent" type="button">撤销最近手动标记</button>
+        <span id="cycleEventStatus" class="form-status" role="status"></span>
+      </div>
+      <p class="note">手动标记仅保存“类型、时间、当时选择的套餐档位”，不保存自由文本。它会切断同周期增量样本；“套餐切换”还会阻止切换前周期进入当前套餐的个人历史基线。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>时间</th><th>边界类型</th><th>来源</th><th>说明</th></tr></thead>
+          <tbody id="transitionRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">CAPACITY TREND</p>
+          <h2>推算额度随时间变化</h2>
+          <p>单个快照也会绘制；社区/自定义参考区间与个人历史中位线会叠加显示。</p>
+        </div>
+        <span id="snapshotCount" class="count">0 个快照</span>
+      </div>
+      <div class="legend" aria-label="图例">
+        <span><i class="legend-line estimate"></i>本地推算</span>
+        <span><i class="legend-line reference"></i>套餐参考中心</span>
+        <span><i class="legend-band"></i>套餐参考区间</span>
+        <span><i class="legend-line baseline"></i>个人历史基线</span>
+      </div>
+      <div class="chart-wrap">
+        <svg id="quotaChart" class="chart" viewBox="0 0 1000 320" role="img" aria-label="推算额度时间序列"></svg>
+        <div id="quotaChartEmpty" class="empty">打开 Usage 并完成一次被动捕获后显示。</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">CYCLE CONSISTENCY</p>
+          <h2>同周期 Credits 与已用比例</h2>
+          <p>参考直线表示在设定套餐基准下，各已用百分比理论对应的累计 Credits；单点也可与参考比较。</p>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <svg id="cycleChart" class="chart" viewBox="0 0 1000 320" role="img" aria-label="同周期 Credits 与已用比例散点图"></svg>
+        <div id="cycleChartEmpty" class="empty">当前周期尚无有效用量点。</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">DAILY USAGE</p>
+          <h2>被动捕获的每日 Credits</h2>
+          <p>显示 Usage 页面实际加载到的日期区间，不会在后台自行补抓。</p>
+        </div>
+        <span id="dailyCount" class="count">0 天</span>
+      </div>
+      <div class="chart-wrap">
+        <svg id="dailyChart" class="chart" viewBox="0 0 1000 320" role="img" aria-label="每日 Credits 柱状图"></svg>
+        <div id="dailyChartEmpty" class="empty">尚无按日 Credits 数据。</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">CONSISTENCY WATCH</p>
+          <h2>观测异常与待复核事件</h2>
+          <p>只标记本地快照之间的数值不一致或突变；不把它们直接解释为账号被扣量或路由降级。</p>
+        </div>
+        <span id="anomalyCount" class="count">0 条</span>
+      </div>
+      <div id="anomalyList" class="anomaly-list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading"><div><p class="eyebrow">SNAPSHOTS</p><h2>额度快照</h2></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>采集时间</th><th>周期起点</th><th>已用</th><th>周期 Credits</th><th>推算 100%</th><th>套餐参考</th><th>置信度</th></tr></thead>
+          <tbody id="snapshotRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading"><div><p class="eyebrow">DAILY DETAIL</p><h2>最近捕获的按日用量</h2></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>日期</th><th>Credits</th><th>Turns</th><th>总 Tokens</th><th>缓存输入</th><th>未缓存输入</th><th>输出 Tokens</th></tr></thead>
+          <tbody id="dailyRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">ROUTE EVIDENCE</p><h2>模型路由观察</h2><p>只展示请求/响应中可见的白名单模型元数据，不包含聊天正文。</p></div>
+        <span id="routeCount" class="count">0 条记录</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>时间</th><th>请求模型</th><th>响应优先字段</th><th>判定</th><th>resolved</th><th>server</th><th>assistant</th><th>套餐字段</th><th>来源</th></tr></thead>
+          <tbody id="routeRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="methodology panel">
+      <p class="eyebrow">INTERPRETATION</p>
+      <h2>如何解读</h2>
+      <div class="method-grid">
+        <div><h3>纯被动捕获</h3><p>只复制 Usage 页面本来就收到的限额、按日用量和重置机会响应；不读取令牌、不发起用量请求、不轮询。</p></div>
+        <div><h3>额度估计</h3><p>优先使用同一周期不同时间点的 Credits 增量除以已用百分比增量；周期边界日的单点比例只作暂定显示，不直接触发额度变化判断。</p></div>
+        <div><h3>重置与基线</h3><p>自然重置、主动重置和套餐切换会切断同周期计算；个人历史基线只使用兼容套餐与兼容窗口的最近周期。</p></div>
+        <div><h3>路由证据</h3><p>`resolved_model_slug`、服务器元数据与助手消息模型字段互相冲突时单独标记；字段不同不自动等于降级。</p></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>Muofu AI Quota Lens <span id="footerVersion"></span> · 本地存储 · 无遥测 · 非 OpenAI 官方项目</footer>
+  <script src="../src/core.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>
