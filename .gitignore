@@ -1,0 +1,35 @@
+# Local-only working material (AMO submissions, review evidence, saved sessions).
+/.tmp/*
+!/.tmp/.gitkeep
+
+# Generated packages and reports.
+/release/
+/web-ext-artifacts/
+/coverage/
+/.nyc_output/
+*.log
+
+# Dependencies and local tooling state.
+/node_modules/
+.cache/
+.eslintcache
+
+# Secrets and signing material.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.xpi
+*.zip
+
+# Editors and operating systems.
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
