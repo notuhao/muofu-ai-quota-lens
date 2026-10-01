@@ -60,18 +60,19 @@ Muofu AI Quota Lens 是一款本地优先的 Firefox 扩展。它被动观察 Ch
 
 ## 开发
 
-需要 Node.js 22+、Python 3、系统 `zip` 与 `unzip`。
+只需要 Node.js 22+。打包与归档审计都是仓库内的 Node 脚本，不依赖 bash、系统 `zip`、`unzip`、`sha256sum` 或 Python，因此在 Windows、Linux 和 macOS 上执行同一组命令即可。
 
 ```bash
 npm ci
 npm run check
 npm run lint:addon
 npm run package
+npm run audit
 ```
 
-`npm run package` 在 `release/` 生成确定性的未签名 XPI、source ZIP 和 SHA-256 校验和。项目没有运行时依赖，也不对运行时代码做转译、合并或压缩。
+`npm run package` 在 `release/` 生成确定性的未签名 XPI、source ZIP 和 SHA-256 校验和，并在结束前自行完成归档审计。归档内容按字节序排序，时间戳固定由 `SOURCE_DATE_EPOCH`（默认 315532800，即 1980-01-01T00:00:00Z）推导，因此同一份源码在任何平台重建都得到同样的归档布局。项目没有运行时依赖，也不对运行时代码做转译、合并或压缩。
 
-项目当前只面向 Firefox Desktop，未声明 `gecko_android`。`npm run lint:addon` 会把 Mozilla linter 的 Android 140/142 最低版本差异作为唯一已知允许警告列出；任何其他 error、notice 或 warning 都会失败。
+项目当前只面向 Firefox Desktop，未声明 `gecko_android`。`npm run lint:addon` 要求 0 error、0 notice；只有 Android 最低版本差异这一条已知警告在 `scripts/lint-addon.mjs` 中被显式允许，其他任何 warning 都会失败。
 
 贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。安全问题不要创建公开 Issue，请按 [SECURITY.md](SECURITY.md) 私密报告。
 

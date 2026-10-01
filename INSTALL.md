@@ -30,23 +30,21 @@ GitHub Release 不会自动把未签名 XPI 变成 Mozilla 签名扩展。标准
 
 ## 从源码构建
 
-需要 Node.js 22+、Python 3、系统 `zip` 与 `unzip`。
+只需要 Node.js 22+。打包和归档审计都是仓库内的 Node 脚本，不需要 bash、系统 `zip`、`unzip`、`sha256sum` 或 Python。
 
 ```bash
 npm ci
 npm run check
 npm run lint:addon
 npm run package
+npm run audit
 ```
 
-制品生成在 `release/`。安装前可验证校验和：
-
-```bash
-cd release
-sha256sum -c muofu-ai-quota-lens-firefox-*-SHA256SUMS.txt
-```
+制品生成在 `release/`。`npm run audit` 会重新校验归档结构、时间戳、成员白名单与 SHA-256 校验和，无需额外的 `sha256sum`。跨平台核对校验和可用任意 SHA-256 工具，校验和文件使用 GNU 格式（`hash␠␠name`）。
 
 `npm run package` 生成的 XPI 仍然未签名。源码 ZIP 用于复现与审计，不能通过“临时载入附加组件”当作 XPI 安装。
+
+构建只依赖 Node.js 22+：`npm ci` 用于安装唯一的开发依赖 `web-ext`（Mozilla linter），打包、归档审计和测试都不需要任何外部工具链。
 
 ## 被动捕获说明
 
