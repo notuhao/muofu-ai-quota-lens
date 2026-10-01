@@ -146,7 +146,19 @@ function main() {
   if (releaseDir !== path.join(root, 'release')) {
     throw new Error(`Refusing to replace unexpected release path: ${releaseDir}`);
   }
+  // Stale artifacts from another version must never survive into a release
+  // directory. Windows can leave files locked by a virus scanner or indexer, so
+  // verify the removal instead of trusting rmSync to have succeeded silently.
   rmSync(releaseDir, { recursive: true, force: true });
+  if (existsSync(releaseDir)) {
+    const stale = readdirSync(releaseDir).sort();
+    if (stale.length > 0) {
+      throw new Error(
+        `release directory could not be cleared before writing ${version}: `
+        + `${JSON.stringify(stale)} (close any process holding these files and retry)`,
+      );
+    }
+  }
   mkdirSync(releaseDir, { recursive: true });
   writeFileSync(path.join(releaseDir, xpiName), xpi);
   writeFileSync(path.join(releaseDir, sourceName), source);
