@@ -277,16 +277,26 @@
 
   function statusPill(status) {
     const mapping = {
-      matched: ["字段一致", "good"],
-      different: ["字段不同", "bad"],
-      field_conflict: ["字段冲突", "warn"],
-      insufficient: ["字段不足", "neutral"],
+      restriction_suspected: ["疑似受限", "bad"],
+      route_anomaly: ["路由异常", "warn"],
+      fast_path_observed: ["Fast path", "warn"],
+      consistent: ["证据一致", "good"],
+      insufficient: ["证据不足", "neutral"],
     };
     const [label, tone] = mapping[status] || mapping.insufficient;
     const span = document.createElement("span");
     span.className = `status-pill ${tone}`;
     span.textContent = label;
     return span;
+  }
+
+  function modelFieldStatusLabel(status) {
+    return {
+      matched: "字段一致",
+      different: "字段不同",
+      field_conflict: "字段冲突",
+      insufficient: "字段不足",
+    }[status] || "字段不足";
   }
 
   function planSourceLabel(source) {
@@ -319,10 +329,24 @@
       : false;
   }
 
-  function renderSummary(report, captureStatus, settings) {
+  function renderSummary(report, captureStatus, settings, rawUsageLatest) {
     if (!Core.isRecord(report)) {
-      byId("summaryCapture").textContent = captureStatus?.state === "error" ? "解析失败" : "等待中";
-      byId("summaryCaptureRange").textContent = captureStatus?.waitingFor || "等待 Usage";
+      const usageLatest = Core.isRecord(rawUsageLatest) ? rawUsageLatest : null;
+      const weeklyWindow = Core.selectWeeklyWindow(Array.isArray(usageLatest?.windows) ? usageLatest.windows : []);
+      byId("summaryCredits").textContent = "—";
+      byId("summaryCaptured").textContent = usageLatest?.observedAt ? formatDate(usageLatest.observedAt) : "尚无快照";
+      byId("summaryUsed").textContent = formatPercent(weeklyWindow?.usedPercent);
+      byId("summaryReset").textContent = `重置：${formatDate(weeklyWindow?.resetAt)}`;
+      byId("summaryQuota").textContent = "—";
+      byId("summaryConfidence").textContent = weeklyWindow ? "直接限额 · 未进行 Credits 推算" : "置信度：—";
+      byId("summaryReference").textContent = "—";
+      byId("summaryReferenceDiff").textContent = "等待按日 Credits";
+      byId("summaryBaselineValue").textContent = "—";
+      byId("summaryHistoryDiff").textContent = "历史容量推算未生成";
+      byId("summaryCapture").textContent = captureStatus?.state === "error" ? "解析失败" : weeklyWindow ? "主限额已捕获" : "等待中";
+      byId("summaryCaptureRange").textContent = weeklyWindow ? "按日 Credits 未加载" : captureStatus?.waitingFor || "等待 Usage";
+      byId("summaryCycleState").textContent = weeklyWindow ? "直接观察" : "—";
+      byId("summaryCycleDetail").textContent = weeklyWindow ? "additional_rate_limits / ChatPass 不混入主额度" : "等待周期证据";
       return;
     }
     const estimate = Core.isRecord(report.estimate) ? report.estimate : {};
@@ -423,6 +447,115 @@
     health.className = `health ${tone}`;
   }
 
+
+  function formatBoolean(value) {
+    return typeof value === "boolean" ? String(value) : "—";
+  }
+
+  function accountDescriptorSummary(items, observed, mode = "generic") {
+    if (!observed) return "—";
+    const list = Array.isArray(items) ? items : [];
+    if (list.length === 0) return "无";
+    return list.map((item) => {
+      const name = item?.name || "未命名";
+      if (mode === "progress") {
+        const remaining = item?.remaining == null ? "" : `剩余 ${formatNumber(item.remaining, 0)}`;
+        const reset = item?.resetAt ? `重置 ${formatDate(item.resetAt)}` : "";
+        return [name, remaining, reset].filter(Boolean).join(" · ");
+      }
+      const flags = [];
+      if (item?.blocked === true) flags.push("blocked");
+      if (item?.limitReached === true) flags.push("limit_reached");
+      if (item?.available === false) flags.push("unavailable");
+      return flags.length > 0 ? `${name} (${flags.join("/")})` : name;
+    }).join("; ");
+  }
+
+  function accountModelUsageSummary(items, observed) {
+    if (!observed) return "—";
+    const list = Array.isArray(items) ? items : [];
+    if (list.length === 0) return "无";
+    return list.map((item) => {
+      const state = item?.available === true ? "可用" : item?.available === false ? "不可用" : "状态未知";
+      const availableAt = item?.availableAt ? ` · ${formatDate(item.availableAt)}` : "";
+      return `${item?.modelSlug || "未命名"}: ${state}${availableAt}`;
+    }).join("; ");
+  }
+
+  function renderAccountLimits(rawState) {
+    const classification = Core.classifyAccountLimitState(rawState);
+    const usageObserved = Boolean(classification.usageObservedAt);
+    const conversationObserved = Boolean(classification.conversationObservedAt);
+    const health = byId("accountLimitHealth");
+
+    byId("accountAllowed").textContent = formatBoolean(classification.allowed);
+    byId("accountLimitReached").textContent = formatBoolean(classification.limitReached);
+    byId("accountUsedPercent").textContent = formatPercent(classification.primaryUsedPercent);
+    byId("accountResetAt").textContent = formatDate(classification.primaryResetAt);
+    byId("accountRateLimitType").textContent = text(classification.rateLimitReachedType);
+    byId("accountOverage").textContent = formatBoolean(classification.overageLimitReached);
+    byId("accountSpendControl").textContent = formatBoolean(classification.spendControlReached);
+    byId("blockedFeatures").textContent = accountDescriptorSummary(classification.blockedFeatures, conversationObserved);
+    byId("modelLimits").textContent = accountDescriptorSummary(classification.modelLimits, conversationObserved);
+    byId("modelUsage").textContent = accountModelUsageSummary(classification.modelUsage, usageObserved);
+    byId("limitsProgress").textContent = accountDescriptorSummary(classification.limitsProgress, conversationObserved, "progress");
+    byId("accountDefaultModel").textContent = text(classification.defaultModelSlug);
+    byId("accountIntendedDefaultModel").textContent = text(classification.intendedDefaultModelSlug);
+    byId("accountUsageObservedAt").textContent = formatDate(classification.usageObservedAt);
+    byId("accountConversationObservedAt").textContent = formatDate(classification.conversationObservedAt);
+    byId("accountLimitObserved").textContent = usageObserved || conversationObserved
+      ? [usageObserved ? "Usage" : null, conversationObserved ? "conversation/init" : null].filter(Boolean).join(" + ")
+      : "尚未观察";
+
+    let summary = "未知";
+    let detail = "尚未观察";
+    let label = "尚未观察到限制状态";
+    let tone = "neutral";
+    if (classification.status === "hard_limit") {
+      summary = "硬限制";
+      detail = classification.allowed === false ? "allowed=false" : "limit_reached=true";
+      label = "已观测到账户主限额的硬限制信号";
+      tone = "bad";
+    } else if (classification.status === "rate_limit_state") {
+      summary = "限额状态";
+      detail = classification.rateLimitReachedType || "rate_limit_reached_type";
+      label = "服务端已返回 rate-limit reached 状态";
+      tone = "bad";
+    } else if (classification.status === "spend_limit") {
+      summary = "Spend 限制";
+      detail = "spend_control.reached=true";
+      label = "服务端 spend control 已达到限制";
+      tone = "bad";
+    } else if (classification.status === "overage_limit") {
+      summary = "超额限制";
+      detail = "overage_limit_reached=true";
+      label = "服务端已返回超额限制信号";
+      tone = "bad";
+    } else if (classification.status === "capability_limited") {
+      summary = "能力受限";
+      const names = [
+        ...classification.blockedFeatures.map((item) => item?.name),
+        ...classification.modelLimits.map((item) => item?.name),
+        ...classification.exhaustedFeatures.map((item) => item?.name),
+      ].filter(Boolean);
+      detail = names.join(", ") || "存在功能/模型限制项";
+      label = "已观测到功能、模型或功能余量限制";
+      tone = "warn";
+    } else if (classification.status === "clear") {
+      summary = "未见限制";
+      detail = classification.primaryUsedPercent == null
+        ? "已观测限制状态"
+        : `主额度已用 ${formatPercent(classification.primaryUsedPercent)}`;
+      label = "当前已观测字段未显示账户或能力限制";
+      tone = "good";
+    }
+    byId("summaryAccountLimit").textContent = summary;
+    byId("summaryAccountLimitDetail").textContent = detail;
+    health.textContent = label;
+    health.className = `health ${tone}`;
+    return classification;
+  }
+
   function renderSettings(settings, report) {
     byId("planSelection").value = settings.planSelection;
     byId("referenceMode").value = settings.referenceMode;
@@ -467,6 +600,9 @@
       tone = "neutral";
     } else if (status?.state === "captured") {
       label = "已同时捕获限额与按日用量响应";
+      tone = "good";
+    } else if (status?.state === "limits_captured") {
+      label = "主限额已捕获；按日 Credits 未由当前页面加载";
       tone = "good";
     } else if (status?.state === "error") {
       label = `响应解析失败：${status.errorCode || "未知错误"}`;
@@ -575,8 +711,14 @@
       appendCell(row, text(assessment.requestedModel));
       appendCell(row, text(assessment.effectiveModel));
       const statusCell = document.createElement("td");
-      statusCell.append(statusPill(assessment.status));
+      statusCell.append(statusPill(assessment.diagnosticStatus));
       row.append(statusCell);
+      appendCell(row, modelFieldStatusLabel(assessment.status));
+      appendCell(row, typeof item.fastConvo === "boolean" ? String(item.fastConvo) : "—");
+      appendCell(row, text(item.thinkingEffort));
+      appendCell(row, assessment.reasoningDurationSec == null ? "—" : `${formatNumber(assessment.reasoningDurationSec, 1)} 秒`);
+      appendCell(row, text(item.requestedModelExperience));
+      appendCell(row, text(item.turnUseCase));
       appendCell(row, text(item.resolvedModel));
       appendCell(row, text(item.serverModel));
       appendCell(row, text(item.assistantModel));
@@ -587,8 +729,8 @@
     if (routes.length === 0) {
       const row = document.createElement("tr");
       const cell = document.createElement("td");
-      cell.colSpan = 9;
-      cell.textContent = "尚无模型路由观察。";
+      cell.colSpan = 15;
+      cell.textContent = "尚无路由与执行观察。";
       row.append(cell);
       body.append(row);
     }
@@ -648,9 +790,11 @@
     const report = Core.isRecord(state[KEYS.creditLatest])
       ? state[KEYS.creditLatest]
       : null;
+    const usageLatest = Core.isRecord(state[KEYS.usageLatest]) ? state[KEYS.usageLatest] : null;
     const captureStatus = Core.isRecord(state[KEYS.captureStatus]) ? state[KEYS.captureStatus] : null;
-    renderSummary(report, captureStatus, settings);
+    renderSummary(report, captureStatus, settings, usageLatest);
     renderResetCredits(state[KEYS.resetCreditsLatest]);
+    const accountLimits = renderAccountLimits(state[KEYS.accountLimitsLatest]);
     renderSettings(settings, report);
     renderCaptureStatus(captureStatus, settings);
     renderCycleTransitions(snapshots, cycleEvents, report);
@@ -663,7 +807,7 @@
     drawQuotaChart(snapshots, report);
     drawCycleChart(snapshots, report);
     drawDailyChart(report);
-    currentView = { state, report, snapshots, routes, cycleEvents, settings, captureStatus };
+    currentView = { state, report, usageLatest, accountLimits, snapshots, routes, cycleEvents, settings, captureStatus };
     return currentView;
   }
 
@@ -749,7 +893,7 @@
         schemaVersion: 2,
         mode: "passive",
         state: "waiting",
-        waitingFor: "usage_and_daily",
+        waitingFor: "usage",
         updatedAt: new Date().toISOString(),
         pageUrl: USAGE_URL,
       },
@@ -797,9 +941,9 @@
   }
 
   async function clearAll() {
-    const accepted = confirm("确定清空全部 Credits 快照、最新报告、捕获状态、手动周期边界和路由观察吗？扩展设置将保留。");
+    const accepted = confirm("确定清空全部 Credits 快照、最新报告、捕获状态、手动周期边界和路由/执行观察吗？扩展设置将保留。");
     if (!accepted) return;
-    await api.storage.local.remove([KEYS.creditLatest, KEYS.creditSnapshots, KEYS.captureStatus, KEYS.resetCreditsLatest, KEYS.routeObservations, KEYS.cycleEvents]);
+    await api.storage.local.remove([KEYS.creditLatest, KEYS.usageLatest, KEYS.accountLimitsLatest, KEYS.creditSnapshots, KEYS.captureStatus, KEYS.resetCreditsLatest, KEYS.routeObservations, KEYS.cycleEvents]);
     await readState();
   }
 

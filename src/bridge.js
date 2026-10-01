@@ -20,6 +20,7 @@
   let overlay = null;
   let routeWriteQueue = Promise.resolve();
   let creditWriteQueue = Promise.resolve();
+  let accountWriteQueue = Promise.resolve();
 
   async function storageGet(keys) {
     return await api.storage.local.get(keys);
@@ -215,6 +216,9 @@
       if (sanitized.kind === "usage" && sanitized.resetCredits) {
         await saveResetCreditObservation(sanitized);
       }
+      if (sanitized.kind === "usage") {
+        await storageSet({ [KEYS.usageLatest]: sanitized });
+      }
       if (sanitized.kind === "usage" && sanitized.windows.length === 0) {
         await renderOverlay();
         return;
@@ -233,8 +237,10 @@
           ? session.dailyEndDate
           : sanitized.endDate;
       }
+      const hasUsage = Boolean(session.usage);
+      const hasDaily = session.rowsByDate.size > 0;
       await mergeCaptureStatus({
-        state: session.usage && session.rowsByDate.size > 0 ? "building" : "waiting",
+        state: hasUsage ? (hasDaily ? "building" : "limits_captured") : "waiting",
         sessionId: session.sessionId,
         pageUrl: session.pageUrl,
         usageObservedAt: session.usage?.observedAt || null,
@@ -242,7 +248,7 @@
         dailyStartDate: session.dailyStartDate,
         dailyEndDate: session.dailyEndDate,
         dailyRowCount: session.rowsByDate.size,
-        waitingFor: !session.usage ? "usage" : session.rowsByDate.size === 0 ? "daily" : null,
+        waitingFor: !hasUsage ? "usage" : !hasDaily ? "daily" : null,
         errorCode: null,
       });
       await buildFromPassiveSession(session);
@@ -253,6 +259,22 @@
       }).catch(() => undefined);
     });
     return creditWriteQueue;
+  }
+
+  function storeAccountLimitObservation(observation) {
+    accountWriteQueue = accountWriteQueue.then(async () => {
+      const sanitized = Core.sanitizeAccountLimitObservation(observation);
+      if (!sanitized) return;
+      const settings = await getSettings();
+      if (sanitized.kind === "usage_limits" && !settings.captureCredits) return;
+      if (sanitized.kind === "conversation_limits" && !settings.routeInspection) return;
+      const stored = await storageGet(KEYS.accountLimitsLatest);
+      const next = Core.mergeAccountLimitState(stored[KEYS.accountLimitsLatest], sanitized);
+      if (!next) return;
+      await storageSet({ [KEYS.accountLimitsLatest]: next });
+      await renderOverlay();
+    }).catch(() => undefined);
+    return accountWriteQueue;
   }
 
   function mergeStoredRoute(existing, incoming) {
@@ -296,10 +318,11 @@
   async function storeHookStatus(payload) {
     if (!Core.isRecord(payload)) return;
     const stored = (await storageGet(KEYS.captureStatus))[KEYS.captureStatus];
+    const preservedState = ["captured", "limits_captured", "building"].includes(stored?.state) ? stored.state : null;
     const state = payload.status === "credit-parse-failed"
       ? "error"
-      : stored?.state === "captured"
-        ? "captured"
+      : preservedState
+        ? preservedState
         : "ready";
     await mergeCaptureStatus({
       state,
@@ -320,6 +343,7 @@
       || envelope.version !== 2) return;
     if (envelope.type === "route-observation") void storeRouteObservation(envelope.payload);
     else if (envelope.type === "credit-observation") void storeCreditObservation(envelope.payload);
+    else if (envelope.type === "account-limit-observation") void storeAccountLimitObservation(envelope.payload);
     else if (envelope.type === "hook-status") void storeHookStatus(envelope.payload);
   }
 
@@ -359,6 +383,20 @@
       field_conflict: "响应路由字段互相冲突",
       insufficient: "路由字段不足",
     }[status] || "路由字段不足";
+  }
+
+  function routeDiagnosticLabel(status) {
+    return {
+      restriction_suspected: "疑似受限 · 建议复核",
+      route_anomaly: "路由证据异常",
+      fast_path_observed: "观测到 fast path",
+      consistent: "多字段证据一致",
+      insufficient: "诊断证据不足",
+    }[status] || "诊断证据不足";
+  }
+
+  function formatBoolean(value) {
+    return typeof value === "boolean" ? String(value) : "—";
   }
 
   function resetCreditStatusLabel(classification) {
@@ -430,6 +468,10 @@
       .panel.collapsed .body { display:none; }
       .header { display:flex; align-items:center; gap:8px; padding:10px 11px; border-bottom:1px solid rgba(15,23,42,.10); background:rgba(248,250,252,.92); }
       .title { min-width:0; flex:1; font-weight:750; font-size:13px; letter-spacing:.01em; }
+      .header-alert { padding:3px 7px; border-radius:999px; font-size:10px; font-weight:800; white-space:nowrap; }
+      .header-alert.warning { background:#fff7ed; color:#9a3412; }
+      .header-alert.danger { background:#fef2f2; color:#b91c1c; }
+      .header-alert[hidden] { display:none !important; }
       button { border:0; border-radius:8px; background:transparent; color:inherit; cursor:pointer; padding:4px 7px; font:inherit; }
       button:hover { background:rgba(15,23,42,.08); }
       .body { padding:10px 11px 11px; display:grid; gap:9px; }
@@ -455,6 +497,8 @@
         .label,.section-title,.route-row span:first-child { color:#94a3b8; }
         .status { background:#312e81; color:#e0e7ff; }
         .warning { background:#431407; color:#fed7aa; }
+        .header-alert.warning { background:#431407; color:#fed7aa; }
+        .header-alert.danger { background:#450a0a; color:#fecaca; }
         .danger { background:#450a0a; color:#fecaca; }
         .stale { background:#1e293b; color:#cbd5e1; }
       }
@@ -464,12 +508,14 @@
     panel.innerHTML = `
       <div class="header">
         <div class="title">Muofu AI Quota Lens</div>
+        <span class="header-alert" data-alert hidden></span>
         <button type="button" data-action="capture" title="打开或重载 Usage">↻</button>
         <button type="button" data-action="collapse" title="折叠">−</button>
         <button type="button" data-action="hide" title="隐藏">×</button>
       </div>
       <div class="body">
         <div class="section" data-credit-section></div>
+        <div class="section" data-account-section></div>
         <div class="section" data-reset-section></div>
         <div class="section" data-route-section></div>
         <div class="warning">Credits 仅被动观察 Usage 页面自身响应；套餐参考与额度估计均非官方承诺。</div>
@@ -506,18 +552,69 @@
     const view = ensureOverlay();
     view.panel.classList.toggle("collapsed", Boolean(settings.overlayCollapsed));
     view.panel.querySelector('[data-action="collapse"]').textContent = settings.overlayCollapsed ? "+" : "−";
-    const state = await storageGet([KEYS.creditLatest, KEYS.resetCreditsLatest, KEYS.routeObservations, KEYS.captureStatus]);
+    const state = await storageGet([KEYS.creditLatest, KEYS.usageLatest, KEYS.accountLimitsLatest, KEYS.resetCreditsLatest, KEYS.routeObservations, KEYS.captureStatus]);
     const routes = Array.isArray(state[KEYS.routeObservations]) ? state[KEYS.routeObservations] : [];
     const latestRoute = routes.at(-1) || null;
+    const routeAssessment = settings.routeInspection && Core.isRecord(latestRoute) ? Core.routeAssessment(latestRoute) : null;
     const report = Core.isRecord(state[KEYS.creditLatest])
       ? state[KEYS.creditLatest]
       : null;
+    const usageLatest = Core.isRecord(state[KEYS.usageLatest]) ? state[KEYS.usageLatest] : null;
+    const directWeeklyWindow = Core.selectWeeklyWindow(Array.isArray(usageLatest?.windows) ? usageLatest.windows : []);
     const reportSettingsCurrent = report ? Core.creditReportMatchesSettings(report, settings) : false;
     const resetCredits = Core.classifyResetCreditsState(state[KEYS.resetCreditsLatest]);
+    const storedAccountLimits = Core.isRecord(state[KEYS.accountLimitsLatest]) ? state[KEYS.accountLimitsLatest] : null;
+    const accountLimits = Core.classifyAccountLimitState({
+      usage: settings.captureCredits ? storedAccountLimits?.usage : null,
+      conversation: settings.routeInspection ? storedAccountLimits?.conversation : null,
+    });
     const captureStatus = Core.isRecord(state[KEYS.captureStatus]) ? state[KEYS.captureStatus] : null;
     const creditSection = view.panel.querySelector("[data-credit-section]");
+    const accountSection = view.panel.querySelector("[data-account-section]");
     const resetSection = view.panel.querySelector("[data-reset-section]");
     const routeSection = view.panel.querySelector("[data-route-section]");
+
+    const alert = view.panel.querySelector("[data-alert]");
+    const creditWarning = settings.captureCredits && Array.isArray(report?.anomalies)
+      && report.anomalies.some((item) => item?.severity === "warning");
+    const resetDanger = settings.captureCredits && (resetCredits.status === "danger" || resetCredits.status === "stale");
+    const resetWarning = settings.captureCredits && resetCredits.status === "warning";
+    if (accountLimits.status === "hard_limit") {
+      alert.hidden = false;
+      alert.className = "header-alert danger";
+      alert.textContent = "⛔ 硬限制";
+    } else if (accountLimits.status === "rate_limit_state") {
+      alert.hidden = false;
+      alert.className = "header-alert danger";
+      alert.textContent = "⛔ 限额状态";
+    } else if (accountLimits.status === "spend_limit") {
+      alert.hidden = false;
+      alert.className = "header-alert danger";
+      alert.textContent = "⛔ Spend 限制";
+    } else if (accountLimits.status === "overage_limit") {
+      alert.hidden = false;
+      alert.className = "header-alert danger";
+      alert.textContent = "⛔ 超额限制";
+    } else if (accountLimits.status === "capability_limited") {
+      alert.hidden = false;
+      alert.className = "header-alert warning";
+      alert.textContent = "⚠ 能力受限";
+    } else if (routeAssessment?.diagnosticStatus === "restriction_suspected") {
+      alert.hidden = false;
+      alert.className = "header-alert danger";
+      alert.textContent = "⚠ 疑似受限";
+    } else if (routeAssessment?.diagnosticStatus === "route_anomaly" || resetDanger || creditWarning) {
+      alert.hidden = false;
+      alert.className = "header-alert danger";
+      alert.textContent = "⚠ 异常";
+    } else if (resetWarning) {
+      alert.hidden = false;
+      alert.className = "header-alert warning";
+      alert.textContent = "⚠ 需关注";
+    } else {
+      alert.hidden = true;
+      alert.textContent = "";
+    }
 
     if (!settings.captureCredits) {
       creditSection.replaceChildren(
@@ -543,11 +640,59 @@
             : "设置已变更，等待新的 Usage 捕获后更新比较。",
         ),
       );
+    } else if (directWeeklyWindow) {
+      const grid = overlayNode("div", "grid");
+      grid.append(
+        overlayMetric("周窗口已用", formatPercent(directWeeklyWindow.usedPercent)),
+        overlayMetric("周窗口重置", formatObservedExpiry(directWeeklyWindow.resetAt)),
+      );
+      creditSection.replaceChildren(
+        overlayNode("div", "section-title", "Codex Usage · 直接限额"),
+        grid,
+        overlayNode("div", "status", "主限额已捕获；当前页面未提供按日 Credits 时，不进行容量推算。"),
+      );
     } else {
       const waiting = captureStatus?.waitingFor === "daily" ? "已见限额响应，等待按日用量响应" : captureStatus?.waitingFor === "usage" ? "已见按日用量，等待限额响应" : "打开或重载 Codex Usage 以被动捕获";
       creditSection.replaceChildren(
         overlayNode("div", "section-title", "Codex Credits · 被动捕获"),
         overlayNode("div", "status", waiting),
+      );
+    }
+
+    if (accountLimits.status === "unknown") {
+      accountSection.replaceChildren(
+        overlayNode("div", "section-title", "账户 / 会话限制"),
+        overlayNode("div", "status", "等待 Usage 或 conversation/init 的页面响应。"),
+      );
+    } else {
+      const accountGrid = overlayNode("div", "grid");
+      accountGrid.append(
+        overlayMetric("allowed", formatBoolean(accountLimits.allowed)),
+        overlayMetric("limit_reached", formatBoolean(accountLimits.limitReached)),
+        overlayMetric("主额度已用", formatPercent(accountLimits.primaryUsedPercent)),
+        overlayMetric("overage", formatBoolean(accountLimits.overageLimitReached)),
+        overlayMetric("spend_control", formatBoolean(accountLimits.spendControlReached)),
+      );
+      const blockedFeatureNames = accountLimits.blockedFeatures.map((item) => item?.name).filter(Boolean);
+      const modelLimitNames = accountLimits.modelLimits.map((item) => item?.name).filter(Boolean);
+      const blockedModelNames = accountLimits.blockedModels.map((item) => item?.name).filter(Boolean);
+      const exhaustedFeatureNames = accountLimits.exhaustedFeatures.map((item) => item?.name).filter(Boolean);
+      const detailLines = [];
+      if (accountLimits.rateLimitReachedType) detailLines.push(`rate-limit: ${accountLimits.rateLimitReachedType}`);
+      if (accountLimits.spendControlReached === true) detailLines.push("spend_control.reached=true");
+      if (accountLimits.overageLimitReached === true) detailLines.push("overage_limit_reached=true");
+      if (blockedFeatureNames.length > 0) detailLines.push(`blocked: ${blockedFeatureNames.join(", ")}`);
+      if (modelLimitNames.length > 0) detailLines.push(`model limits: ${modelLimitNames.join(", ")}`);
+      if (blockedModelNames.length > 0) detailLines.push(`blocked models: ${blockedModelNames.join(", ")}`);
+      if (exhaustedFeatureNames.length > 0) detailLines.push(`exhausted: ${exhaustedFeatureNames.join(", ")}`);
+      const dangerStatuses = new Set(["hard_limit", "rate_limit_state", "spend_limit", "overage_limit"]);
+      const tone = dangerStatuses.has(accountLimits.status)
+        ? "danger"
+        : accountLimits.status === "capability_limited" ? "warning" : "status";
+      accountSection.replaceChildren(
+        overlayNode("div", "section-title", "账户 / 会话限制"),
+        accountGrid,
+        overlayNode("div", tone, detailLines.join(" · ") || "当前已观测字段未显示账户或能力限制。"),
       );
     }
 
@@ -565,25 +710,29 @@
 
     if (!settings.routeInspection) {
       routeSection.replaceChildren(
-        overlayNode("div", "section-title", "ChatGPT 路由观察"),
-        overlayNode("div", "status", "路由元数据观察已关闭。"),
+        overlayNode("div", "section-title", "ChatGPT 路由与执行观察"),
+        overlayNode("div", "status", "路由/执行元数据观察已关闭。"),
       );
     } else if (Core.isRecord(latestRoute)) {
-      const assessment = Core.routeAssessment(latestRoute);
+      const assessment = routeAssessment;
       const route = overlayNode("div", "route");
       route.append(
         overlayRouteRow("请求模型", assessment.requestedModel || "—"),
         overlayRouteRow("响应字段", assessment.effectiveModel || "—"),
-        overlayRouteRow("状态", routeStatusLabel(assessment.status)),
+        overlayRouteRow("模型字段", routeStatusLabel(assessment.status)),
+        overlayRouteRow("诊断", routeDiagnosticLabel(assessment.diagnosticStatus)),
+        overlayRouteRow("fast_convo", formatBoolean(assessment.fastConvo)),
+        overlayRouteRow("thinking", latestRoute.thinkingEffort || "—"),
+        overlayRouteRow("reasoning", assessment.reasoningDurationSec == null ? "—" : `${formatNumber(assessment.reasoningDurationSec, 1)} 秒`),
       );
       routeSection.replaceChildren(
-        overlayNode("div", "section-title", "ChatGPT 路由观察"),
+        overlayNode("div", "section-title", "ChatGPT 路由与执行观察"),
         route,
       );
     } else {
       routeSection.replaceChildren(
-        overlayNode("div", "section-title", "ChatGPT 路由观察"),
-        overlayNode("div", "status", "发送一条新消息后显示可见模型元数据。"),
+        overlayNode("div", "section-title", "ChatGPT 路由与执行观察"),
+        overlayNode("div", "status", "发送一条新消息后显示可见路由/执行元数据。"),
       );
     }
   }
@@ -623,7 +772,7 @@
       await mergeCaptureStatus({
         state: "waiting",
         pageUrl: `${location.origin}${location.pathname}`,
-        waitingFor: "usage_and_daily",
+        waitingFor: "usage",
         errorCode: null,
       });
     }
@@ -639,7 +788,7 @@
       });
       return;
     }
-    if (Object.keys(changes).some((key) => [KEYS.creditLatest, KEYS.resetCreditsLatest, KEYS.routeObservations, KEYS.captureStatus].includes(key))) {
+    if (Object.keys(changes).some((key) => [KEYS.creditLatest, KEYS.usageLatest, KEYS.accountLimitsLatest, KEYS.resetCreditsLatest, KEYS.routeObservations, KEYS.captureStatus].includes(key))) {
       void renderOverlay();
     }
   });

@@ -10,7 +10,7 @@
   <header class="masthead">
     <div>
       <h1>Muofu AI Quota Lens</h1>
-      <p>ChatGPT Codex 用量、重置机会与模型路由观察</p>
+      <p>ChatGPT Codex 用量、重置机会与路由/执行观察</p>
     </div>
     <span id="version" class="version"></span>
   </header>
@@ -113,7 +113,33 @@
     <section class="card">
       <div class="section-heading">
         <div>
-          <h2>ChatGPT 路由观察</h2>
+          <h2>账户与会话限制</h2>
+          <p id="accountLimitTimestamp" class="muted">尚无观察记录</p>
+        </div>
+        <span id="accountLimitBadge" class="badge neutral">未知</span>
+      </div>
+      <div class="metrics">
+        <div class="metric"><span>allowed</span><strong id="accountAllowed">—</strong></div>
+        <div class="metric"><span>limit_reached</span><strong id="accountLimitReached">—</strong></div>
+        <div class="metric"><span>主额度已用</span><strong id="accountUsedPercent">—</strong></div>
+        <div class="metric"><span>overage</span><strong id="accountOverage">—</strong></div>
+      </div>
+      <dl class="details">
+        <div><dt>主额度重置</dt><dd id="accountResetAt">—</dd></div>
+        <div><dt>rate_limit_reached_type</dt><dd id="accountRateLimitType">—</dd></div>
+        <div><dt>spend_control.reached</dt><dd id="accountSpendControl">—</dd></div>
+        <div><dt>blocked_features</dt><dd id="blockedFeatures">—</dd></div>
+        <div><dt>model_limits</dt><dd id="modelLimits">—</dd></div>
+        <div><dt>model_usage</dt><dd id="modelUsage">—</dd></div>
+        <div><dt>limits_progress</dt><dd id="limitsProgress">—</dd></div>
+      </dl>
+      <p class="fineprint">Usage 与 conversation/init 两类最新状态分别覆盖更新；一类响应缺失不会清空另一类已观测状态。空数组表示该响应明确未报告对应限制项；非空 model_limits 表示存在模型限制记录，但会与 blocked_features 的显式封锁语义分开显示。</p>
+    </section>
+
+    <section class="card">
+      <div class="section-heading">
+        <div>
+          <h2>ChatGPT 路由与执行观察</h2>
           <p id="routeTimestamp" class="muted">尚无观察记录</p>
         </div>
         <span id="routeBadge" class="badge neutral">字段不足</span>
@@ -121,16 +147,22 @@
       <dl class="route-grid">
         <div><dt>请求模型</dt><dd id="requestedModel">—</dd></div>
         <div><dt>优先响应字段</dt><dd id="effectiveModel">—</dd></div>
+        <div><dt>模型字段状态</dt><dd id="routeModelStatus">—</dd></div>
+        <div><dt>fast_convo</dt><dd id="fastConvo">—</dd></div>
+        <div><dt>thinking effort</dt><dd id="thinkingEffort">—</dd></div>
+        <div><dt>reasoning 时长</dt><dd id="reasoningDuration">—</dd></div>
+        <div><dt>requested experience</dt><dd id="modelExperience">—</dd></div>
+        <div><dt>turn use case</dt><dd id="turnUseCase">—</dd></div>
         <div><dt>resolved_model_slug</dt><dd id="resolvedModel">—</dd></div>
         <div><dt>server model</dt><dd id="serverModel">—</dd></div>
         <div><dt>assistant model</dt><dd id="assistantModel">—</dd></div>
         <div><dt>采集来源</dt><dd id="routeSources">—</dd></div>
       </dl>
-      <label class="toggle"><input id="routeInspection" type="checkbox"> 保存路由元数据观察</label>
+      <label class="toggle"><input id="routeInspection" type="checkbox"> 保存路由/执行元数据观察</label>
       <div class="button-row compact">
         <button id="clearRoutes" class="danger" type="button">清空路由记录</button>
       </div>
-      <p class="fineprint">只记录模型字段、时间、请求/会话 ID；不记录提示词、回答正文、Cookie、令牌或原始载荷。</p>
+      <p class="fineprint">只记录白名单路由/执行元数据（模型字段、fast_convo、thinking effort、reasoning 时长、turn 分类、时间与关联 ID）；不记录提示词、回答正文、Cookie、令牌或原始载荷。组合信号仅用于本地启发式诊断。</p>
     </section>
 
     <section class="caveat">

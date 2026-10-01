@@ -268,6 +268,17 @@ check('passive capture is user-controllable', () => {
   assert.match(bridge, /if \(!settings\.captureCredits\) return/);
 });
 check('passive capture sessions are bounded', () => assert.match(bridge, /MAX_PASSIVE_SESSIONS = 4/));
+check('current usage keeps the primary quota separate from sibling allowance domains', () => {
+  assert.match(core, /function extractUsageLimitWindows/);
+  assert.match(core, /extractLimitWindows\(root\.rate_limit\)/);
+  assert.match(hook, /Core\.extractUsageLimitWindows/);
+});
+check('direct usage limits do not require legacy daily analytics to be visible', () => {
+  assert.match(core, /usageLatest: "ccwUsageLatestV1"/);
+  assert.match(bridge, /KEYS\.usageLatest/);
+  assert.match(bridge, /limits_captured/);
+  assert.match(bridge, /preservedState = \["captured", "limits_captured", "building"\]/);
+});
 
 // Credits estimation, references, visualization, and diagnostics.
 check('community reference dataset is versioned', () => {
@@ -364,6 +375,43 @@ check('route parser enforces payload and pending-capture limits', () => {
 check('route inspection is user-controllable', () => {
   assert.match(core, /routeInspection: true/);
   assert.match(hook, /preferences\.routeInspection/);
+});
+check('route diagnostics keep richer execution evidence behind an explicit allowlist', () => {
+  assert.match(core, /fastConvo/);
+  assert.match(core, /requestedModelExperience/);
+  assert.match(core, /turnUseCase/);
+  assert.match(core, /reasoningDurationSec/);
+  assert.match(core, /diagnosticStatus = "restriction_suspected"/);
+  assert.match(read('PRIVACY.md'), /`fast_convo`/);
+});
+check('account and conversation limit observations use bounded allowlists', () => {
+  assert.match(core, /accountLimitsLatest: "ccwAccountLimitsLatestV1"/);
+  assert.match(core, /MAX_ACCOUNT_LIMIT_ITEMS = 32/);
+  assert.match(core, /function sanitizeAccountLimitObservation/);
+  assert.match(core, /function mergeAccountLimitState/);
+  assert.match(hook, /method === "POST" && path === "\/backend-api\/conversation\/init"/);
+  assert.match(hook, /account-limit-observation/);
+  assert.match(bridge, /KEYS\.accountLimitsLatest/);
+});
+check('account-limit sanitizer excludes identity and raw quota domains', () => {
+  const block = core.match(/function sanitizeAccountLimitObservation[\s\S]*?\n  }\n\n/)?.[0] || '';
+  assert.doesNotMatch(block, /user_id|account_id|email|balance|chatpass|additional_rate_limits|rawBody|headers|authorization/i);
+});
+check('account limit classifier separates explicit states from plain model-limit records', () => {
+  assert.match(core, /rate_limit_state/);
+  assert.match(core, /spend_limit/);
+  assert.match(core, /overage_limit/);
+  assert.match(core, /capability_limited/);
+  assert.match(core, /blockedModels\.length > 0/);
+});
+check('collapsed overlay keeps an anomaly indicator in the header', () => {
+  assert.match(bridge, /\.panel\.collapsed \.body \{ display:none; \}/);
+  const alertIndex = bridge.indexOf('data-alert');
+  const bodyIndex = bridge.indexOf('<div class="body">');
+  assert.ok(alertIndex >= 0 && bodyIndex > alertIndex);
+  assert.match(bridge, /restriction_suspected/);
+  assert.match(bridge, /hard_limit/);
+  assert.match(bridge, /capability_limited/);
 });
 check('snapshot retention is bounded', () => assert.match(bridge, /MAX_SNAPSHOTS = 500/));
 check('route retention is bounded', () => assert.match(bridge, /MAX_ROUTE_OBSERVATIONS = 200/));

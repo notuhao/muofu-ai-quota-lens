@@ -100,6 +100,33 @@ test('fetch hook captures only route metadata from an SSE response', async () =>
   assert.ok(messages.every((item) => item.targetOrigin === 'https://chatgpt.com'));
 });
 
+test('fetch hook keeps the richer execution evidence needed by route diagnosis', async () => {
+  const sse = [
+    'data: {"type":"server_ste_metadata","metadata":{"model_slug":"gpt-5-6-thinking","fast_convo":true,"requested_model_experience":"thinking","turn_use_case":"search","turn_mode":"default"}}',
+    'data: {"message":{"author":{"role":"user"},"metadata":{"resolved_model_slug":"gpt-5-5-mini","thinking_effort":"max"}}}',
+    'data: {"message":{"author":{"role":"assistant"},"metadata":{"model_slug":"gpt-5-6-thinking","reasoning_status":"reasoning_ended","finished_duration_sec":29}}}',
+    'data: [DONE]',
+    '',
+  ].join('\n');
+  const nativeFetch = async () => new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const { context, messages } = makeContext(nativeFetch);
+  await context.fetch('https://chatgpt.com/backend-api/f/conversation', {
+    method: 'POST',
+    body: JSON.stringify({ model: 'gpt-5-6-thinking', thinking_effort: 'max' }),
+  });
+  await settle();
+  const completed = messages.map((item) => item.message.payload).find((item) => item.phase === 'completed');
+  assert.equal(completed.fastConvo, true);
+  assert.equal(completed.requestedModelExperience, 'thinking');
+  assert.equal(completed.turnUseCase, 'search');
+  assert.equal(completed.turnMode, 'default');
+  assert.equal(completed.thinkingEffort, 'max');
+  assert.equal(completed.reasoningStatus, 'reasoning_ended');
+  assert.equal(completed.reasoningDurationSec, 29);
+  assert.equal(completed.resolvedModel, 'gpt-5-5-mini');
+  assert.equal(completed.assessment.diagnosticStatus, 'restriction_suspected');
+});
+
 test('fetch hook remains functional when a page installs a delegating wrapper later', async () => {
   const sse = 'data: {"metadata":{"resolved_model_slug":"gpt-5-5-mini"}}\ndata: [DONE]\n';
   const nativeFetch = async () => new Response(sse, { headers: { 'content-type': 'text/event-stream' } });
@@ -180,7 +207,7 @@ test('passively sanitizes Codex usage and daily responses without creating extra
         rate_limit_reset_credits: { available_count: 2, title: 'PRIVATE_TITLE' },
         plan_type: 'chatgpt_pro_5x',
         email: 'private@example.com',
-        access_token: 'SECRET_TOKEN',
+        access_token: '[REDACTED_SECRET]',
       }), { headers: { 'content-type': 'application/json' } });
     }
     return new Response(JSON.stringify({
@@ -219,6 +246,45 @@ test('passively sanitizes Codex usage and daily responses without creating extra
   assert.ok(creditMessages.every((item) => item.targetOrigin === 'https://chatgpt.com'));
 });
 
+test('current wham usage shape does not mix additional or ChatPass limits into the primary quota', async () => {
+  const nativeFetch = async () => new Response(JSON.stringify({
+    rate_limit: {
+      primary_window: {
+        reset_at: 1_800_000_000,
+        limit_window_seconds: 7 * 24 * 60 * 60,
+        used_percent: 40,
+      },
+    },
+    additional_rate_limits: [{
+      limit_name: 'reserve',
+      normal_model_slug: 'fallback-model',
+      rate_limit: {
+        primary_window: {
+          reset_at: 1_800_000_000,
+          limit_window_seconds: 7 * 24 * 60 * 60,
+          used_percent: 90,
+        },
+      },
+    }],
+    chatpass: {
+      windows: [{
+        reset_at: 1_800_000_000,
+        limit_window_seconds: 7 * 24 * 60 * 60,
+        used_percent: 99,
+      }],
+    },
+    plan_type: 'chatgpt_pro',
+  }), { headers: { 'content-type': 'application/json' } });
+  const { context, messages } = makeContext(nativeFetch);
+  await context.fetch('https://chatgpt.com/backend-api/wham/usage');
+  await settle();
+  const usage = messages.find((item) => item.message.type === 'credit-observation').message.payload;
+  assert.equal(usage.windows.length, 1);
+  assert.equal(usage.windows[0].key, 'rate_limit.primary_window');
+  assert.equal(usage.windows[0].usedPercent, 40);
+  assert.doesNotMatch(JSON.stringify(usage), /reserve|fallback-model|chatpass/i);
+});
+
 test('passively observes only minimal reset credit expiry details from the exact GET endpoint', async () => {
   let calls = 0;
   const nativeFetch = async () => {
@@ -231,7 +297,7 @@ test('passively observes only minimal reset credit expiry details from the exact
         { id: 'PRIVATE_CREDIT_ID_3', status: 'consumed', expires_at: '2026-09-01T12:00:00.000Z' },
       ],
       user_id: 'PRIVATE_USER_ID',
-      authenticationInfo: { token: 'SECRET_TOKEN' },
+      authenticationInfo: { token: '[REDACTED_SECRET]' },
     }), { headers: { 'content-type': 'application/json', 'x-private': 'SECRET_HEADER' } });
   };
   const { context, messages } = makeContext(nativeFetch);
@@ -334,6 +400,13 @@ test('does not associate a ChatGPT WebSocket message with a different pending co
 
 test('bridge persists reset credits separately and renders the accepted overlay summary', () => {
   assert.match(bridgeSource, /KEYS\.resetCreditsLatest/);
+  assert.match(bridgeSource, /KEYS\.usageLatest/);
+  assert.match(bridgeSource, /limits_captured/);
+  assert.match(bridgeSource, /const preservedState/);
+  assert.match(bridgeSource, /data-alert/);
+  assert.match(bridgeSource, /header-alert/);
+  assert.match(bridgeSource, /restriction_suspected/);
+  assert.match(bridgeSource, /\.panel\.collapsed \.body \{ display:none; \}/);
   assert.match(bridgeSource, /mergeResetCreditsState/);
   assert.match(bridgeSource, /classifyResetCreditsState/);
   assert.match(bridgeSource, /Muofu AI Quota Lens/);
@@ -355,4 +428,85 @@ test('does not inspect weekly grouped analytics as daily rows', async () => {
   await context.fetch('https://chatgpt.com/backend-api/wham/analytics/daily-workspace-usage-counts?start_date=2026-08-01&end_date=2026-08-31&group_by=week');
   await settle();
   assert.equal(messages.filter((item) => item.message.type === 'credit-observation').length, 0);
+});
+
+
+test('wham usage emits a separate sanitized account-limit observation alongside credit usage', async () => {
+  let calls = 0;
+  const nativeFetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({
+      user_id: 'PRIVATE_USER',
+      account_id: 'PRIVATE_ACCOUNT',
+      email: 'private@example.com',
+      rate_limit: {
+        allowed: true,
+        limit_reached: false,
+        primary_window: {
+          reset_at: 1_800_000_000,
+          limit_window_seconds: 7 * 24 * 60 * 60,
+          used_percent: 50,
+        },
+      },
+      rate_limit_reached_type: null,
+      credits: { balance: 12345, overage_limit_reached: false },
+      spend_control: { reached: false, individual_limit: { limit: 99999 } },
+      model_usage: {
+        'gpt-6-astra': { available: true, available_at: null, credits_would_enable: false },
+      },
+      additional_rate_limits: [{ limit_name: 'reserve', normal_model_slug: 'gpt-5.6-luna' }],
+      chatpass: { windows: [{ used_percent: 90 }] },
+    }), { headers: { 'content-type': 'application/json' } });
+  };
+  const { context, messages } = makeContext(nativeFetch);
+  await context.fetch('https://chatgpt.com/backend-api/wham/usage');
+  await settle();
+  assert.equal(calls, 1);
+
+  const credit = messages.find((item) => item.message.type === 'credit-observation')?.message.payload;
+  const limits = messages.find((item) => item.message.type === 'account-limit-observation')?.message.payload;
+  assert.ok(credit);
+  assert.ok(limits);
+  assert.equal(limits.kind, 'usage_limits');
+  assert.equal(limits.allowed, true);
+  assert.equal(limits.limitReached, false);
+  assert.equal(limits.primaryUsedPercent, 50);
+  assert.equal(limits.overageLimitReached, false);
+  assert.equal(limits.spendControlReached, false);
+  assert.equal(limits.modelUsage[0].modelSlug, 'gpt-6-astra');
+  assert.doesNotMatch(JSON.stringify(limits), /PRIVATE_|private@example|balance|reserve|gpt-5\.6-luna|chatpass/i);
+});
+
+test('conversation init passively emits only bounded blocked/model/progress limit metadata', async () => {
+  let calls = 0;
+  const nativeFetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({
+      type: 'conversation_detail_metadata',
+      banner_info: { title: 'PRIVATE_BANNER' },
+      blocked_features: [],
+      model_limits: [],
+      limits_progress: [
+        { feature_name: 'deep_research', remaining: 125, reset_after: '2026-10-08T00:00:00.000Z' },
+        { feature_name: 'image_gen', remaining: 1000, reset_after: '2026-10-08T00:00:00.000Z' },
+      ],
+      default_model_slug: 'gpt-5-6-thinking',
+      intended_default_model_slug: 'gpt-5-6-thinking',
+      private_profile: { email: 'private@example.com' },
+    }), { headers: { 'content-type': 'application/json' } });
+  };
+  const { context, messages } = makeContext(nativeFetch);
+  await context.fetch('https://chatgpt.com/backend-api/conversation/init', { method: 'POST', body: '{}' });
+  await settle();
+  assert.equal(calls, 1);
+
+  const limits = messages.find((item) => item.message.type === 'account-limit-observation')?.message.payload;
+  assert.ok(limits);
+  assert.equal(limits.kind, 'conversation_limits');
+  assert.deepEqual(Array.from(limits.blockedFeatures), []);
+  assert.deepEqual(Array.from(limits.modelLimits), []);
+  assert.equal(limits.limitsProgress[0].name, 'deep_research');
+  assert.equal(limits.limitsProgress[0].remaining, 125);
+  assert.equal(limits.defaultModelSlug, 'gpt-5-6-thinking');
+  assert.doesNotMatch(JSON.stringify(limits), /PRIVATE_|private@example|banner_info|private_profile/i);
 });

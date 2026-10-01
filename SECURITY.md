@@ -38,7 +38,7 @@ GitHub Release 中的未签名 XPI 仅用于开发和审查，不代表 Mozilla 
 
 Credits 功能不会主动发起私有用量请求。MAIN world 只观察 ChatGPT 页面自身发出的限定同源 GET 响应，包括：
 
-- `/backend-api/wham/usage`；
+- `/backend-api/wham/usage`；主额度只从顶层 `rate_limit` 提取，顶层 `additional_rate_limits` / ChatPass 等独立额度域不混入主窗口；
 - `/backend-api/wham/analytics/daily-workspace-usage-counts`，且只接受按日或缺省分组；
 - `/backend-api/wham/rate-limit-reset-credits` 的详情响应。
 
@@ -46,7 +46,9 @@ Credits 功能不会主动发起私有用量请求。MAIN world 只观察 ChatGP
 
 响应在 MAIN world 输出前与 ISOLATED world 持久化前分别经过白名单清洗。reset credit 的 profile、用户、credit ID、头像、标题、描述和原始详情必须在首次清洗时丢弃。
 
-模型路由功能只处理限定的 ChatGPT 会话流、会话记录和明确允许的同站 WebSocket；它不修改请求、响应、模型选择或账户额度。
+路由/执行诊断只处理限定的 ChatGPT 会话流、会话记录和明确允许的同站 WebSocket，并把数据缩减为模型字段、thinking effort、`fast_convo`、requested experience、turn 分类、reasoning 状态/时长和关联 ID 等白名单字段；它不修改请求、响应、模型选择或账户额度。诊断只基于组合信号：任一单字段或短时长都不能单独证明隐性限制。
+
+账户/会话限制诊断还会被动观察精确的 `POST /backend-api/conversation/init` 响应，但只提取有界的 `blocked_features`、`model_limits`、`limits_progress` 与 default model slug；`/backend-api/wham/usage` 只额外保留 `allowed`、`limit_reached`、主窗口 `used_percent`、`rate_limit_reached_type`、overage / spend-control 状态和有界 `model_usage`。两个来源分别覆盖更新，不保存账号资料、Credits balance、banner 或完整原始响应。
 
 ## 代码与数据约束
 
@@ -54,7 +56,7 @@ Credits 功能不会主动发起私有用量请求。MAIN world 只观察 ChatGP
 - 页面主世界无法调用扩展 API，只能通过同源 `window.postMessage` 发送结构化白名单字段。
 - ISOLATED world 校验 `event.source`、`event.origin`、消息来源、协议版本和字段类型。
 - Credits 响应、会话记录、SSE 事件、WebSocket 帧、对象深度、节点数量、日记录数量和字符串长度均有上限。
-- 本地保留上限为 500 个 Credits 快照、200 条路由观察、100 个受控周期边界标记、1 个 reset credits 最新状态和 4 个临时配对会话。
+- 本地保留上限为 1 个最新主限额摘要、1 个最新账户/会话限制状态、500 个 Credits 快照、200 条路由/执行观察、100 个受控周期边界标记、1 个 reset credits 最新状态和 4 个临时配对会话。
 - 打包审计拒绝路径穿越、重复成员、符号链接、`.tmp` 和发布者私有材料进入公共归档。
 
 ## 威胁与证据边界
@@ -67,7 +69,8 @@ Credits 功能不会主动发起私有用量请求。MAIN world 只观察 ChatGP
 - 扩展不会根据本地时钟自行减少服务端数量，过期缓存只会提示重载；
 - 自然重置、主动重置、套餐切换和窗口重排是分析边界，不应直接解释为异常；
 - 边界日汇总可能混合前后周期，首点仅作暂定显示，同周期增量证据优先；
-- 路由字段不证明底层物理推理后端；
+- 路由与执行字段不证明底层物理推理后端；`fast_convo`、模型差异、短 reasoning 时长都只是启发式证据，组合提示“疑似受限”仍需要跨 turn / A-B 复核；
+- `allowed=false`、`limit_reached=true`、非空 `rate_limit_reached_type`、`spend_control.reached=true` 或 `overage_limit_reached=true` 是页面明确返回的限制状态；`blocked_features`、显式 blocked / unavailable / limit-reached 的 model limit，以及 `limits_progress.remaining=0` 作为能力限制证据。仅仅存在非空 `model_limits` 记录不自动解释为封锁；
 - 私有端点或字段变化可能导致捕获失败、部分数据或过期显示。
 
 ## 服务条款与私有接口风险

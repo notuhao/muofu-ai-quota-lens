@@ -2,7 +2,7 @@
   "name": "muofu-ai-quota-lens-firefox",
   "version": "0.3.0",
   "private": true,
-  "description": "Muofu AI Quota Lens Firefox extension for local ChatGPT Codex usage, reset-credit, and model-route insights.",
+  "description": "Muofu AI Quota Lens Firefox extension for local ChatGPT Codex usage, reset-credit, and route/execution insights.",
   "homepage": "https://github.com/notuhao/muofu-ai-quota-lens#readme",
   "repository": {
     "type": "git",

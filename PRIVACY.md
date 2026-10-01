@@ -1,6 +1,6 @@
 # 隐私说明 / Privacy Notice
 
-更新日期：2026-08-30
+更新日期：2026-10-01
 
 ## 核心承诺
 
@@ -32,7 +32,16 @@ Firefox Manifest 因此声明：
 
 ## Credits 与 reset credits
 
-Credits 观察最多保留周期起止、用量百分比、按日 Credits/Tokens/Turns 汇总、套餐提示、捕获时间和由这些数据计算出的本地诊断结果。
+Credits / 限额观察最多保留主 `rate_limit` 的周期起止与用量百分比、按日 Credits/Tokens/Turns 汇总、套餐提示、捕获时间和由这些数据计算出的本地诊断结果。当前响应若还包含顶层 `additional_rate_limits`、ChatPass 或其他额度域，它们不会作为主周额度窗口写入该状态。扩展可单独保存一个最新主限额摘要；没有按日数据时不会伪造 Credits 容量估计。
+
+## 账户与会话限制状态
+
+扩展还会保存一个**最新账户/会话限制状态**，由两个页面已有响应独立覆盖更新：
+
+- `/backend-api/wham/usage`：仅保留 `rate_limit.allowed`、`rate_limit.limit_reached`、主窗口 `used_percent` / reset / window seconds、`rate_limit_reached_type`、`credits.overage_limit_reached`、`spend_control.reached`，以及有界的 `model_usage` 可用性摘要；
+- 精确的 `POST /backend-api/conversation/init`：仅保留 `blocked_features`、`model_limits`、`limits_progress` 与 default / intended default model slug 的有界摘要。
+
+两个来源互不清空：只捕获到 Usage 不会删除最近一次 init 状态，反之亦然。不会保存 Usage 中的 user/account ID、邮箱、Credits balance、完整 additional rate limits、ChatPass 原始结构，或 init 中的 banner、profile、完整响应。
 
 reset credits 只保留一个最新摘要状态：
 
@@ -44,13 +53,15 @@ reset credits 只保留一个最新摘要状态：
 
 不会保存 reset credit ID、profile user ID、头像 URL、授予人、标题、描述、原始数组或原始响应。详情数量不会替代服务端摘要数量；页面未加载详情时，扩展不会主动请求或推断到期时间。
 
-## 模型路由观察
+## 路由与执行观察
 
 路由功能会在页面内临时检查限定会话端点的请求/响应流与同站 WebSocket，以提取模型标识和关联 ID。只有以下白名单元数据能够进入扩展存储：
 
 - 请求模型和 thinking effort；
 - response、resolved、server、assistant 与 default model 标识；
-- 请求 ID、会话 ID、计划类型、观测时间、来源和诊断状态。
+- `fast_convo`、requested model experience、turn use case / mode；
+- reasoning 状态与已完成时长；
+- 请求 ID、会话 ID、计划类型、观测时间、来源和由上述白名单字段计算的诊断状态。
 
 不会保存或导出：
 
@@ -64,8 +75,8 @@ reset credits 只保留一个最新摘要状态：
 
 Firefox `storage.local` 中最多保存：
 
-- 500 个 Credits 快照；
-- 200 条路由观察；
+- 1 个最新主限额摘要、1 个最新账户/会话限制状态与最多 500 个 Credits 快照；
+- 200 条路由/执行观察；
 - 1 个最新 reset credits 摘要状态；
 - 4 个尚在页面内配对的临时捕获会话；
 - 最多 100 个受控周期边界标记；
@@ -75,7 +86,7 @@ Firefox `storage.local` 中最多保存：
 
 ## 用户控制
 
-用户可以分别关闭 Credits 观察、路由观察和页面浮层，可以撤销本地边界标记，也可以随时导出或清空本地数据。卸载扩展会由 Firefox 按其存储规则处理扩展数据。
+用户可以分别关闭 Credits 观察、路由/执行观察和页面浮层，可以撤销本地边界标记，也可以随时导出或清空本地数据。卸载扩展会由 Firefox 按其存储规则处理扩展数据。
 
 在提交 Issue 或安全报告前，请用合成值替代真实用量，并删除 Cookie、Token、完整 HAR、提示词、回答、账号标识和其他个人信息。
 

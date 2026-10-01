@@ -51,6 +51,39 @@ test('extracts nested limit windows and selects the weekly window', () => {
   assert.equal(weekly.remainingPercent, 75);
 });
 
+test('current usage parser isolates the canonical rate_limit from sibling allowance domains', () => {
+  const windows = Core.extractUsageLimitWindows({
+    rate_limit: {
+      primary_window: {
+        reset_at: 1_800_000_000,
+        limit_window_seconds: 7 * 24 * 60 * 60,
+        used_percent: 40,
+      },
+    },
+    additional_rate_limits: [{
+      limit_name: 'reserve',
+      rate_limit: {
+        primary_window: {
+          reset_at: 1_800_000_000,
+          limit_window_seconds: 7 * 24 * 60 * 60,
+          used_percent: 90,
+        },
+      },
+    }],
+    chatpass: {
+      windows: [{
+        reset_at: 1_800_000_000,
+        limit_window_seconds: 7 * 24 * 60 * 60,
+        used_percent: 99,
+      }],
+    },
+  });
+  assert.equal(windows.length, 1);
+  assert.equal(windows[0].key, 'rate_limit.primary_window');
+  assert.equal(windows[0].usedPercent, 40);
+  assert.deepEqual(Array.from(windows[0].path), ['rate_limit', 'primary_window']);
+});
+
 test('normalizes daily data and aggregates token categories', () => {
   const rows = Core.normalizeDailyRows({ data: [
     { date: '2026-08-28', totals: { credits: 3.5, turns: 2, cached_text_input_tokens: 100, uncached_text_input_tokens: 50, text_output_tokens: 25 } },
@@ -162,6 +195,24 @@ test('parses SSE assistant, server, and resolved model fields', () => {
   assert.equal(fields.requestId, 'req-1');
 });
 
+test('parses execution metadata used by the multi-signal route diagnostic', () => {
+  const raw = [
+    'data: {"type":"server_ste_metadata","metadata":{"model_slug":"gpt-5-6-thinking","fast_convo":true,"requested_model_experience":"thinking","turn_use_case":"search","turn_mode":"default"}}',
+    'data: {"message":{"author":{"role":"user"},"metadata":{"resolved_model_slug":"gpt-5-5-mini","thinking_effort":"max"}}}',
+    'data: {"message":{"author":{"role":"assistant"},"metadata":{"model_slug":"gpt-5-6-thinking","reasoning_status":"reasoning_ended","finished_duration_sec":29}}}',
+    'data: [DONE]',
+  ].join('\n');
+  const fields = Core.parseSseResponse(raw);
+  assert.equal(fields.fastConvo, true);
+  assert.equal(fields.requestedModelExperience, 'thinking');
+  assert.equal(fields.turnUseCase, 'search');
+  assert.equal(fields.turnMode, 'default');
+  assert.equal(fields.thinkingEffort, 'max');
+  assert.equal(fields.reasoningStatus, 'reasoning_ended');
+  assert.equal(fields.reasoningDurationSec, 29);
+  assert.equal(fields.resolvedModel, 'gpt-5-5-mini');
+});
+
 test('conversation record follows the current branch instead of an older assistant', () => {
   const record = {
     id: 'conv-current',
@@ -178,11 +229,79 @@ test('conversation record follows the current branch instead of an older assista
   assert.notEqual(fields.assistantModel, 'old-model');
 });
 
-test('route assessment distinguishes matches, differences, conflicts, and missing fields', () => {
+test('messages-array conversation records stay on the current turn when capture starts mid-conversation', () => {
+  const record = {
+    id: 'conv-array',
+    current_node: 'assistant-current',
+    messages: [
+      { id: 'user-old', author: { role: 'user' }, metadata: { model_slug: 'old-request' } },
+      { id: 'assistant-old', author: { role: 'assistant' }, metadata: { model_slug: 'old-model', resolved_model_slug: 'old-route' } },
+      { id: 'user-current', author: { role: 'user' }, metadata: { model_slug: 'gpt-5-6-thinking', thinking_effort: 'max' } },
+      { id: 'assistant-current', author: { role: 'assistant' }, metadata: { model_slug: 'gpt-5-6-thinking', resolved_model_slug: 'gpt-5-6-thinking', reasoning_status: 'reasoning_ended', finished_duration_sec: 632 } },
+    ],
+  };
+  const fields = Core.parseResponseText(JSON.stringify(record));
+  assert.equal(fields.assistantModel, 'gpt-5-6-thinking');
+  assert.equal(fields.resolvedModel, 'gpt-5-6-thinking');
+  assert.equal(fields.thinkingEffort, 'max');
+  assert.equal(fields.reasoningDurationSec, 632);
+  assert.notEqual(fields.resolvedModel, 'old-route');
+});
+
+test('route assessment distinguishes model fields and uses multiple signals for restriction suspicion', () => {
   assert.equal(Core.routeAssessment({ requestedModel: 'gpt-5.6-pro', resolvedModel: 'gpt-5-6-pro' }).status, 'matched');
   assert.equal(Core.routeAssessment({ requestedModel: 'gpt-5-6-pro', resolvedModel: 'gpt-5-5-mini' }).status, 'different');
   assert.equal(Core.routeAssessment({ requestedModel: 'gpt-5-6-pro', resolvedModel: 'gpt-5-5-mini', serverModel: 'gpt-5-6-pro' }).status, 'field_conflict');
   assert.equal(Core.routeAssessment({ requestedModel: 'gpt-5-6-pro' }).status, 'insufficient');
+
+  const mismatchFast = Core.routeAssessment({
+    requestedModel: 'gpt-5-6-thinking',
+    resolvedModel: 'gpt-5-5-mini',
+    fastConvo: true,
+    thinkingEffort: 'max',
+    reasoningDurationSec: 29,
+  });
+  assert.equal(mismatchFast.diagnosticStatus, 'restriction_suspected');
+  assert.equal(mismatchFast.anomalous, true);
+  assert.ok(mismatchFast.diagnosticSignals.some((signal) => signal.code === 'fast_convo'));
+  assert.ok(mismatchFast.diagnosticSignals.some((signal) => signal.code === 'requested_resolved_mismatch'));
+
+  const conflictingFast = Core.routeAssessment({
+    requestedModel: 'gpt-5-6-thinking',
+    resolvedModel: 'gpt-5-5-mini',
+    serverModel: 'gpt-5-6-thinking',
+    fastConvo: true,
+  });
+  assert.equal(conflictingFast.status, 'field_conflict');
+  assert.equal(conflictingFast.diagnosticStatus, 'restriction_suspected');
+  assert.ok(conflictingFast.diagnosticSignals.some((signal) => signal.code === 'requested_resolved_mismatch'));
+  assert.ok(conflictingFast.diagnosticSignals.some((signal) => signal.code === 'response_field_conflict'));
+
+  const shortFast = Core.routeAssessment({
+    requestedModel: 'gpt-5-6-thinking',
+    resolvedModel: 'gpt-5-6-thinking',
+    fastConvo: true,
+    thinkingEffort: 'max',
+    reasoningDurationSec: 1,
+  });
+  assert.equal(shortFast.diagnosticStatus, 'restriction_suspected');
+
+  const fastOnly = Core.routeAssessment({
+    requestedModel: 'gpt-5-6-thinking',
+    resolvedModel: 'gpt-5-6-thinking',
+    fastConvo: true,
+  });
+  assert.equal(fastOnly.diagnosticStatus, 'fast_path_observed');
+  assert.equal(fastOnly.anomalous, false);
+
+  const longConsistent = Core.routeAssessment({
+    requestedModel: 'gpt-5-6-thinking',
+    resolvedModel: 'gpt-5-6-thinking',
+    thinkingEffort: 'max',
+    reasoningDurationSec: 632,
+  });
+  assert.equal(longConsistent.diagnosticStatus, 'consistent');
+  assert.equal(longConsistent.anomalous, false);
 });
 
 test('sanitizer enforces a route-only allowlist', () => {
@@ -193,13 +312,20 @@ test('sanitizer enforces a route-only allowlist', () => {
     observedAt: '2026-08-30T12:00:00.000Z',
     requestedModel: 'gpt-5-6-pro',
     resolvedModel: 'gpt-5-5-mini',
+    fastConvo: true,
+    thinkingEffort: 'max',
+    reasoningDurationSec: 29,
+    turnUseCase: 'search',
     prompt: 'SECRET_PROMPT',
     answer: 'SECRET_ANSWER',
-    authorization: 'Bearer SECRET_TOKEN',
+    authorization: 'Bearer [REDACTED_TOKEN]',
     evidence: [{ field: 'resolved_model_slug', value: 'gpt-5-5-mini', path: 'metadata.resolved_model_slug' }],
   });
   const serialized = JSON.stringify(sanitized);
   assert.match(serialized, /gpt-5-5-mini/);
+  assert.equal(sanitized.fastConvo, true);
+  assert.equal(sanitized.reasoningDurationSec, 29);
+  assert.equal(sanitized.turnUseCase, 'search');
   assert.doesNotMatch(serialized, /SECRET_PROMPT|SECRET_ANSWER|SECRET_TOKEN|authorization/);
 });
 
@@ -241,10 +367,10 @@ test('sanitizes passive credit observations to an explicit allowlist', () => {
       resetAt: '2026-09-01T00:00:00.000Z',
       cycleStart: '2026-08-25T00:00:00.000Z',
       durationSeconds: 7 * 24 * 60 * 60,
-      rawSecret: 'SECRET',
+      rawSecret: '[REDACTED_SECRET]',
     }],
     planHints: [{ planId: 'pro5x', raw: 'chatgpt_pro_5x', path: 'plan_type' }],
-    token: 'SECRET_TOKEN',
+    token: '[REDACTED_SECRET]',
     email: 'private@example.com',
   });
   assert.equal(observation.pageUrl, 'https://chatgpt.com/codex/cloud/settings/analytics');
@@ -623,7 +749,7 @@ test('sanitizes reset credit summary and details to the accepted minimal schema'
       { id: 'credit-secret-4', status: 'available', expires_at: 'invalid timestamp' },
       { id: 'credit-secret-5', expires_at: '2026-09-01T12:00:00.000Z' },
     ],
-    authenticationInfo: { token: 'SECRET_TOKEN' },
+    authenticationInfo: { token: '[REDACTED_SECRET]' },
   });
   assert.equal(details.availableCount, null);
   assert.equal(details.nearestExpiresAt, '2026-09-02T12:00:00.000Z');
@@ -720,4 +846,173 @@ test('classifies reset credit expiry boundaries without decrementing the observe
   assert.equal(Core.classifyResetCreditsState({ availableCount: 2, detailsLoaded: true, nonExpiringObservedCount: 1 }).status, 'non_expiring');
   assert.equal(Core.classifyResetCreditsState({ availableCount: 2, detailsLoaded: true }).status, 'details_without_expiry');
   assert.equal(Core.classifyResetCreditsState(null).status, 'unknown');
+});
+
+
+test('extracts and sanitizes the current account rate-limit summary without private usage payload fields', () => {
+  const summary = Core.extractAccountLimitSummary({
+    user_id: 'PRIVATE_USER',
+    account_id: 'PRIVATE_ACCOUNT',
+    email: 'private@example.com',
+    rate_limit: {
+      allowed: true,
+      limit_reached: false,
+      primary_window: {
+        used_percent: 50,
+        reset_at: 1_800_000_000,
+        limit_window_seconds: 7 * 86400,
+      },
+    },
+    rate_limit_reached_type: null,
+    credits: { balance: 12345, overage_limit_reached: false },
+    spend_control: { reached: false, individual_limit: { limit: 99999 } },
+    model_usage: {
+      'gpt-6-astra': { available: true, available_at: null, credits_would_enable: false, secret: '[REDACTED_SECRET]' },
+    },
+    additional_rate_limits: [{ limit_name: 'reserve', normal_model_slug: 'gpt-5.6-luna' }],
+    chatpass: { windows: [{ used_percent: 90 }] },
+  });
+  assert.equal(summary.allowed, true);
+  assert.equal(summary.limitReached, false);
+  assert.equal(summary.primaryUsedPercent, 50);
+  assert.equal(summary.primaryWindowSeconds, 7 * 86400);
+  assert.equal(summary.rateLimitReachedType, null);
+  assert.equal(summary.overageLimitReached, false);
+  assert.equal(summary.spendControlReached, false);
+  assert.deepEqual(Array.from(summary.modelUsage, (item) => item.modelSlug), ['gpt-6-astra']);
+
+  const sanitized = Core.sanitizeAccountLimitObservation({
+    kind: 'usage_limits',
+    sessionId: 'session-limits',
+    observedAt: '2026-10-01T01:00:00.000Z',
+    pageUrl: 'https://chatgpt.com/c/test?private=1',
+    endpointPath: '/backend-api/wham/usage?secret=1',
+    ...summary,
+  });
+  const serialized = JSON.stringify(sanitized);
+  assert.equal(sanitized.primaryUsedPercent, 50);
+  assert.equal(sanitized.modelUsage[0].available, true);
+  assert.doesNotMatch(serialized, /PRIVATE_|private@example|balance|additional_rate_limits|chatpass|normal_model_slug/i);
+});
+
+test('conversation limit summaries preserve bounded progress and only explicit capability limits trigger warnings', () => {
+  const clear = Core.extractConversationLimitSummary({
+    type: 'conversation_detail_metadata',
+    banner_info: { title: 'PRIVATE_BANNER' },
+    blocked_features: [],
+    model_limits: [{ model_slug: 'gpt-6-astra', available: true }],
+    limits_progress: [
+      { feature_name: 'deep_research', remaining: 125, reset_after: '2026-10-08T00:00:00.000Z' },
+      { feature_name: 'image_gen', remaining: 1000, reset_after: '2026-10-08T00:00:00.000Z' },
+    ],
+    default_model_slug: 'gpt-5-6-thinking',
+    intended_default_model_slug: 'gpt-5-6-thinking',
+  });
+  const clearObservation = Core.sanitizeAccountLimitObservation({
+    kind: 'conversation_limits',
+    sessionId: 'session-limits',
+    observedAt: '2026-10-01T01:01:00.000Z',
+    endpointPath: '/backend-api/conversation/init',
+    ...clear,
+  });
+  assert.equal(clearObservation.limitsProgress[0].remaining, 125);
+  assert.equal(clearObservation.limitsProgress[0].resetAt, '2026-10-08T00:00:00.000Z');
+
+  let state = Core.mergeAccountLimitState(null, Core.sanitizeAccountLimitObservation({
+    kind: 'usage_limits',
+    sessionId: 'session-limits',
+    observedAt: '2026-10-01T01:00:00.000Z',
+    allowed: true,
+    limitReached: false,
+    primaryUsedPercent: 50,
+    overageLimitReached: false,
+    modelUsage: [{ modelSlug: 'gpt-6-astra', available: true }],
+  }));
+  state = Core.mergeAccountLimitState(state, clearObservation);
+  let classification = Core.classifyAccountLimitState(state);
+  assert.equal(classification.status, 'clear');
+  assert.equal(classification.primaryUsedPercent, 50);
+  assert.equal(classification.blockedModels.length, 0);
+
+  state = Core.mergeAccountLimitState(state, Core.sanitizeAccountLimitObservation({
+    kind: 'conversation_limits',
+    sessionId: 'session-limits',
+    observedAt: '2026-10-01T01:02:00.000Z',
+    blockedFeatures: ['file_upload'],
+    modelLimits: [{ name: 'gpt-6-astra', available: false }],
+    limitsProgress: clearObservation.limitsProgress,
+  }));
+  classification = Core.classifyAccountLimitState(state);
+  assert.equal(classification.status, 'capability_limited');
+  assert.equal(classification.blockedFeatures[0].name, 'file_upload');
+  assert.equal(classification.blockedModels[0].name, 'gpt-6-astra');
+
+  state = Core.mergeAccountLimitState(state, Core.sanitizeAccountLimitObservation({
+    kind: 'usage_limits',
+    sessionId: 'session-limits',
+    observedAt: '2026-10-01T01:03:00.000Z',
+    allowed: false,
+    limitReached: true,
+    primaryUsedPercent: 100,
+    rateLimitReachedType: 'primary',
+    overageLimitReached: true,
+  }));
+  classification = Core.classifyAccountLimitState(state);
+  assert.equal(classification.status, 'hard_limit');
+  assert.equal(classification.hardLimit, true);
+  assert.equal(classification.overageLimit, true);
+  assert.equal(classification.blockedFeatures[0].name, 'file_upload');
+});
+
+test('normalizes object reached types and distinguishes spend/overage limit states', () => {
+  const base = {
+    kind: 'usage_limits',
+    sessionId: 'session-limit-types',
+    observedAt: '2026-10-01T02:00:00.000Z',
+    allowed: true,
+    limitReached: false,
+    primaryUsedPercent: 50,
+  };
+
+  let state = Core.mergeAccountLimitState(null, Core.sanitizeAccountLimitObservation({
+    ...base,
+    rateLimitReachedType: { type: 'workspace_member_usage_limit_reached' },
+    spendControlReached: false,
+    overageLimitReached: false,
+  }));
+  let classification = Core.classifyAccountLimitState(state);
+  assert.equal(classification.status, 'rate_limit_state');
+  assert.equal(classification.rateLimitReachedType, 'workspace_member_usage_limit_reached');
+
+  state = Core.mergeAccountLimitState(null, Core.sanitizeAccountLimitObservation({
+    ...base,
+    observedAt: '2026-10-01T02:01:00.000Z',
+    spendControlReached: true,
+    overageLimitReached: false,
+  }));
+  classification = Core.classifyAccountLimitState(state);
+  assert.equal(classification.status, 'spend_limit');
+  assert.equal(classification.spendControlReached, true);
+
+  state = Core.mergeAccountLimitState(null, Core.sanitizeAccountLimitObservation({
+    ...base,
+    observedAt: '2026-10-01T02:02:00.000Z',
+    spendControlReached: false,
+    overageLimitReached: true,
+  }));
+  classification = Core.classifyAccountLimitState(state);
+  assert.equal(classification.status, 'overage_limit');
+
+  state = Core.mergeAccountLimitState(null, Core.sanitizeAccountLimitObservation({
+    kind: 'conversation_limits',
+    sessionId: 'session-limit-types',
+    observedAt: '2026-10-01T02:03:00.000Z',
+    blockedFeatures: [],
+    modelLimits: [{ name: 'gpt-6-astra', available: true }],
+    limitsProgress: [{ name: 'deep_research', remaining: 0, resetAt: '2026-10-08T00:00:00.000Z' }],
+  }));
+  classification = Core.classifyAccountLimitState(state);
+  assert.equal(classification.status, 'capability_limited');
+  assert.equal(classification.exhaustedFeatures[0].name, 'deep_research');
+  assert.equal(classification.blockedModels.length, 0);
 });

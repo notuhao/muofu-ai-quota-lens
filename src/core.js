@@ -7,6 +7,7 @@
   const MAX_CREDIT_ROWS = 400;
   const MAX_LIMIT_WINDOWS = 16;
   const MAX_RESET_CREDIT_DETAILS = 100;
+  const MAX_ACCOUNT_LIMIT_ITEMS = 32;
   const COMMUNITY_REFERENCE_VERSION = "community-2026-q2-v1";
   const COMMUNITY_PLAN_REFERENCES = Object.freeze({
     plus: Object.freeze({
@@ -39,6 +40,8 @@
   });
   const STORAGE_KEYS = Object.freeze({
     creditLatest: "ccwCreditLatestV1",
+    usageLatest: "ccwUsageLatestV1",
+    accountLimitsLatest: "ccwAccountLimitsLatestV1",
     creditSnapshots: "ccwCreditSnapshotsV1",
     captureStatus: "ccwCaptureStatusV2",
     routeObservations: "ccwRouteObservationsV1",
@@ -64,6 +67,12 @@
     resolvedModel: null,
     defaultModel: null,
     thinkingEffort: null,
+    fastConvo: null,
+    requestedModelExperience: null,
+    turnUseCase: null,
+    turnMode: null,
+    reasoningStatus: null,
+    reasoningDurationSec: null,
     requestId: null,
     conversationId: null,
     planType: null,
@@ -250,6 +259,17 @@
       const duration = toNumber(right.durationSeconds) - toNumber(left.durationSeconds);
       return duration !== 0 ? duration : left.key.localeCompare(right.key);
     });
+  }
+
+  function extractUsageLimitWindows(root) {
+    if (!isRecord(root)) return [];
+    if (!isRecord(root.rate_limit)) return extractLimitWindows(root);
+    return extractLimitWindows(root.rate_limit).map((window) => ({
+      ...window,
+      key: `rate_limit.${window.key}`,
+      label: `rate limit ${window.label}`,
+      path: ["rate_limit", ...(Array.isArray(window.path) ? window.path : [])],
+    }));
   }
 
   function selectWeeklyWindow(windows) {
@@ -545,6 +565,249 @@
   function extractResetCreditSummary(root) {
     const count = normalizeAvailableCount(root?.rate_limit_reset_credits?.available_count);
     return count == null ? null : { availableCount: count };
+  }
+
+  function optionalBoolean(value) {
+    return typeof value === "boolean" ? value : null;
+  }
+
+  function optionalPercent(value) {
+    if (value == null || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? round(clamp(number, 0, 100), 6) : null;
+  }
+
+  function optionalNonNegativeNumber(value, maximum = 1e12) {
+    if (value == null || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? Math.min(number, maximum) : null;
+  }
+
+  function normalizeRateLimitReachedType(value) {
+    if (typeof value === "string") return safeIdentifier(value, 96);
+    if (!isRecord(value)) return null;
+    return safeIdentifier(value.type, 96)
+      || safeIdentifier(value.kind, 96)
+      || null;
+  }
+
+  function timestampIso(value) {
+    if (typeof value === "number") return safeEpochSecondsIso(value);
+    return safeIso(value);
+  }
+
+  function limitDescriptor(value, preferredKeys = []) {
+    if (typeof value === "string") {
+      const name = safeIdentifier(value, 128);
+      return name ? { name } : null;
+    }
+    if (!isRecord(value)) return null;
+    const keys = [...preferredKeys, "model_slug", "model", "slug", "feature_name", "feature", "name", "id"];
+    let name = null;
+    for (const key of keys) {
+      name = safeIdentifier(value[key], 128);
+      if (name) break;
+    }
+    const limit = optionalNonNegativeNumber(value.limit);
+    const remaining = optionalNonNegativeNumber(value.remaining);
+    const usedPercent = optionalPercent(value.usedPercent ?? value.used_percent);
+    const resetAt = safeIso(value.resetAt)
+      || timestampIso(value.resets_after)
+      || timestampIso(value.reset_after)
+      || timestampIso(value.reset_at);
+    const available = optionalBoolean(value.available);
+    const blocked = optionalBoolean(value.blocked);
+    const limitReached = optionalBoolean(value.limitReached ?? value.limit_reached);
+    const blockReason = safeIdentifier(value.blockReason ?? value.block_reason, 128);
+    const usingDefaultModelSlug = safeIdentifier(value.usingDefaultModelSlug ?? value.using_default_model_slug, 128);
+    if (!name && remaining == null && usedPercent == null && !resetAt
+      && limit == null && available == null && blocked == null && limitReached == null
+      && !blockReason && !usingDefaultModelSlug) return null;
+    return {
+      name,
+      limit,
+      remaining,
+      usedPercent,
+      resetAt,
+      available,
+      blocked,
+      limitReached,
+      blockReason,
+      usingDefaultModelSlug,
+    };
+  }
+
+  function sanitizeLimitDescriptors(values, preferredKeys = []) {
+    if (!Array.isArray(values)) return [];
+    return values.slice(0, MAX_ACCOUNT_LIMIT_ITEMS)
+      .map((value) => limitDescriptor(value, preferredKeys))
+      .filter(Boolean);
+  }
+
+  function extractAccountLimitSummary(root) {
+    if (!isRecord(root)) return null;
+    const rateLimit = isRecord(root.rate_limit) ? root.rate_limit : null;
+    const primaryWindow = isRecord(rateLimit?.primary_window) ? rateLimit.primary_window : null;
+    const modelUsage = [];
+    if (isRecord(root.model_usage)) {
+      for (const [modelSlugRaw, raw] of Object.entries(root.model_usage).slice(0, MAX_ACCOUNT_LIMIT_ITEMS)) {
+        const modelSlug = safeIdentifier(modelSlugRaw, 128);
+        if (!modelSlug || !isRecord(raw)) continue;
+        modelUsage.push({
+          modelSlug,
+          available: optionalBoolean(raw.available),
+          availableAt: safeIso(raw.available_at),
+          creditsWouldEnable: optionalBoolean(raw.credits_would_enable),
+        });
+      }
+    }
+    return {
+      allowed: optionalBoolean(rateLimit?.allowed),
+      limitReached: optionalBoolean(rateLimit?.limit_reached),
+      primaryUsedPercent: optionalPercent(primaryWindow?.used_percent),
+      primaryResetAt: safeEpochSecondsIso(primaryWindow?.reset_at),
+      primaryWindowSeconds: optionalNonNegativeNumber(primaryWindow?.limit_window_seconds, 366 * DAY_SECONDS),
+      rateLimitReachedType: normalizeRateLimitReachedType(root.rate_limit_reached_type),
+      overageLimitReached: optionalBoolean(root.credits?.overage_limit_reached),
+      spendControlReached: optionalBoolean(root.spend_control?.reached),
+      modelUsage,
+    };
+  }
+
+  function extractConversationLimitSummary(root) {
+    if (!isRecord(root) || root.type !== "conversation_detail_metadata") return null;
+    const blockedFeatures = sanitizeLimitDescriptors(root.blocked_features, ["feature_name"]);
+    const modelLimits = sanitizeLimitDescriptors(root.model_limits, ["model_slug"]);
+    const limitsProgress = sanitizeLimitDescriptors(root.limits_progress, ["feature_name"]);
+    return {
+      blockedFeatures,
+      modelLimits,
+      limitsProgress,
+      defaultModelSlug: safeIdentifier(root.default_model_slug, 128),
+      intendedDefaultModelSlug: safeIdentifier(root.intended_default_model_slug, 128),
+    };
+  }
+
+  function sanitizeAccountLimitObservation(observation) {
+    if (!isRecord(observation)) return null;
+    const kind = ["usage_limits", "conversation_limits"].includes(observation.kind) ? observation.kind : null;
+    const sessionId = safeId(observation.sessionId);
+    if (!kind || !sessionId) return null;
+    const base = {
+      schemaVersion: 1,
+      kind,
+      sessionId,
+      observedAt: safeIso(observation.observedAt) || new Date().toISOString(),
+      pageUrl: sanitizePageUrl(observation.pageUrl),
+      endpointPath: typeof observation.endpointPath === "string"
+        ? observation.endpointPath.replace(/[?#].*$/, "").slice(0, 256)
+        : null,
+    };
+    if (kind === "usage_limits") {
+      const modelUsage = Array.isArray(observation.modelUsage)
+        ? observation.modelUsage.slice(0, MAX_ACCOUNT_LIMIT_ITEMS).map((item) => {
+          if (!isRecord(item)) return null;
+          const modelSlug = safeIdentifier(item.modelSlug, 128);
+          if (!modelSlug) return null;
+          return {
+            modelSlug,
+            available: optionalBoolean(item.available),
+            availableAt: safeIso(item.availableAt),
+            creditsWouldEnable: optionalBoolean(item.creditsWouldEnable),
+          };
+        }).filter(Boolean)
+        : [];
+      return {
+        ...base,
+        allowed: optionalBoolean(observation.allowed),
+        limitReached: optionalBoolean(observation.limitReached),
+        primaryUsedPercent: optionalPercent(observation.primaryUsedPercent),
+        primaryResetAt: safeIso(observation.primaryResetAt),
+        primaryWindowSeconds: optionalNonNegativeNumber(observation.primaryWindowSeconds, 366 * DAY_SECONDS),
+        rateLimitReachedType: normalizeRateLimitReachedType(observation.rateLimitReachedType),
+        overageLimitReached: optionalBoolean(observation.overageLimitReached),
+        spendControlReached: optionalBoolean(observation.spendControlReached),
+        modelUsage,
+      };
+    }
+    return {
+      ...base,
+      blockedFeatures: sanitizeLimitDescriptors(observation.blockedFeatures, ["feature_name"]),
+      modelLimits: sanitizeLimitDescriptors(observation.modelLimits, ["model_slug"]),
+      limitsProgress: sanitizeLimitDescriptors(observation.limitsProgress, ["feature_name"]),
+      defaultModelSlug: safeIdentifier(observation.defaultModelSlug, 128),
+      intendedDefaultModelSlug: safeIdentifier(observation.intendedDefaultModelSlug, 128),
+    };
+  }
+
+  function mergeAccountLimitState(existing, incoming) {
+    const observation = sanitizeAccountLimitObservation(incoming);
+    if (!observation) return isRecord(existing) ? existing : null;
+    const current = isRecord(existing) ? existing : {};
+    const usage = observation.kind === "usage_limits"
+      ? observation
+      : sanitizeAccountLimitObservation(current.usage);
+    const conversation = observation.kind === "conversation_limits"
+      ? observation
+      : sanitizeAccountLimitObservation(current.conversation);
+    const observedTimes = [usage?.observedAt, conversation?.observedAt].filter(Boolean).sort();
+    return {
+      schemaVersion: 1,
+      usage: usage || null,
+      conversation: conversation || null,
+      updatedAt: observedTimes.at(-1) || observation.observedAt,
+    };
+  }
+
+  function classifyAccountLimitState(state) {
+    const usage = isRecord(state?.usage) ? state.usage : null;
+    const conversation = isRecord(state?.conversation) ? state.conversation : null;
+    const blockedFeatures = Array.isArray(conversation?.blockedFeatures) ? conversation.blockedFeatures : [];
+    const modelLimits = Array.isArray(conversation?.modelLimits) ? conversation.modelLimits : [];
+    const blockedModels = modelLimits.filter((item) => item?.blocked === true
+      || item?.limitReached === true
+      || item?.available === false);
+    const limitsProgress = Array.isArray(conversation?.limitsProgress) ? conversation.limitsProgress : [];
+    const exhaustedFeatures = limitsProgress.filter((item) => item?.remaining === 0);
+    const hardLimit = usage?.allowed === false || usage?.limitReached === true;
+    const rateLimitState = Boolean(usage?.rateLimitReachedType);
+    const spendLimit = usage?.spendControlReached === true;
+    const overageLimit = usage?.overageLimitReached === true;
+    const capabilityLimited = blockedFeatures.length > 0
+      || blockedModels.length > 0
+      || exhaustedFeatures.length > 0;
+    let status = "unknown";
+    if (hardLimit) status = "hard_limit";
+    else if (rateLimitState) status = "rate_limit_state";
+    else if (spendLimit) status = "spend_limit";
+    else if (overageLimit) status = "overage_limit";
+    else if (capabilityLimited) status = "capability_limited";
+    else if (usage || conversation) status = "clear";
+    return {
+      status,
+      hardLimit,
+      rateLimitState,
+      spendLimit,
+      overageLimit,
+      capabilityLimited,
+      allowed: usage?.allowed ?? null,
+      limitReached: usage?.limitReached ?? null,
+      primaryUsedPercent: usage?.primaryUsedPercent ?? null,
+      primaryResetAt: usage?.primaryResetAt ?? null,
+      rateLimitReachedType: usage?.rateLimitReachedType ?? null,
+      overageLimitReached: usage?.overageLimitReached ?? null,
+      spendControlReached: usage?.spendControlReached ?? null,
+      blockedFeatures,
+      modelLimits,
+      blockedModels,
+      limitsProgress,
+      exhaustedFeatures,
+      modelUsage: Array.isArray(usage?.modelUsage) ? usage.modelUsage : [],
+      defaultModelSlug: conversation?.defaultModelSlug ?? null,
+      intendedDefaultModelSlug: conversation?.intendedDefaultModelSlug ?? null,
+      usageObservedAt: usage?.observedAt ?? null,
+      conversationObservedAt: conversation?.observedAt ?? null,
+    };
   }
 
   function extractResetCreditDetails(root) {
@@ -1426,6 +1689,19 @@
     pushEvidence(fields, evidenceName, safe, path);
   }
 
+  function assignRouteBoolean(fields, key, value, path, evidenceName = key) {
+    if (typeof value !== "boolean") return;
+    fields[key] = value;
+    pushEvidence(fields, evidenceName, String(value), path);
+  }
+
+  function assignRouteNumber(fields, key, value, path, evidenceName = key, maximum = 24 * 60 * 60) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < 0 || number > maximum) return;
+    fields[key] = round(number, 3);
+    pushEvidence(fields, evidenceName, String(fields[key]), path);
+  }
+
   function mergeRouteFields(...items) {
     const merged = emptyRouteFields();
     for (const item of items) {
@@ -1437,11 +1713,21 @@
         "resolvedModel",
         "defaultModel",
         "thinkingEffort",
+        "requestedModelExperience",
+        "turnUseCase",
+        "turnMode",
+        "reasoningStatus",
         "requestId",
         "conversationId",
         "planType",
       ]) {
         if (item[key] != null) assignRouteField(merged, key, item[key], [], key);
+      }
+      if (typeof item.fastConvo === "boolean") {
+        assignRouteBoolean(merged, "fastConvo", item.fastConvo, [], "fast_convo");
+      }
+      if (item.reasoningDurationSec != null) {
+        assignRouteNumber(merged, "reasoningDurationSec", item.reasoningDurationSec, [], "finished_duration_sec");
       }
       if (Array.isArray(item.evidence)) {
         for (const evidence of item.evidence) {
@@ -1482,6 +1768,13 @@
     assignRouteField(fields, "requestId", metadata.request_id, [...path, "request_id"], "request_id");
     assignRouteField(fields, "conversationId", metadata.conversation_id, [...path, "conversation_id"], "conversation_id");
     assignRouteField(fields, "planType", metadata.plan_type, [...path, "plan_type"], "plan_type");
+    assignRouteField(fields, "thinkingEffort", metadata.thinking_effort, [...path, "thinking_effort"], "thinking_effort");
+    assignRouteBoolean(fields, "fastConvo", metadata.fast_convo, [...path, "fast_convo"], "fast_convo");
+    assignRouteField(fields, "requestedModelExperience", metadata.requested_model_experience, [...path, "requested_model_experience"], "requested_model_experience");
+    assignRouteField(fields, "turnUseCase", metadata.turn_use_case, [...path, "turn_use_case"], "turn_use_case");
+    assignRouteField(fields, "turnMode", metadata.turn_mode, [...path, "turn_mode"], "turn_mode");
+    assignRouteField(fields, "reasoningStatus", metadata.reasoning_status, [...path, "reasoning_status"], "reasoning_status");
+    assignRouteNumber(fields, "reasoningDurationSec", metadata.finished_duration_sec, [...path, "finished_duration_sec"], "finished_duration_sec");
   }
 
   function walkRouteFields(value, fields, path = [], depth = 0, budget = { count: 0 }) {
@@ -1509,6 +1802,10 @@
       }
     }
     assignRouteField(fields, "conversationId", value.conversation_id, [...path, "conversation_id"], "conversation_id");
+    if (value.type === "reasoning_status") {
+      assignRouteField(fields, "reasoningStatus", value.reasoning_status || value.status, [...path, "reasoning_status"], "reasoning_status");
+      assignRouteNumber(fields, "reasoningDurationSec", value.finished_duration_sec, [...path, "finished_duration_sec"], "finished_duration_sec");
+    }
 
     for (const [key, child] of Object.entries(value)) {
       if (value.type === "server_ste_metadata" && key === "metadata") continue;
@@ -1542,14 +1839,28 @@
   function parseConversationRecord(root) {
     if (!isRecord(root)) return null;
     const mapping = isRecord(root.mapping) ? root.mapping : null;
-    if (!mapping) return null;
     const nodes = [];
     const byId = new Map();
-    for (const [key, rawNode] of Object.entries(mapping)) {
-      const node = parseMessageNode(rawNode, key);
-      nodes.push(node);
-      byId.set(node.key, node);
-      byId.set(node.messageId, node);
+    if (mapping) {
+      for (const [key, rawNode] of Object.entries(mapping)) {
+        const node = parseMessageNode(rawNode, key);
+        nodes.push(node);
+        byId.set(node.key, node);
+        byId.set(node.messageId, node);
+      }
+    } else if (Array.isArray(root.messages)) {
+      for (let index = 0; index < root.messages.length && index < 5000; index += 1) {
+        const rawMessage = root.messages[index];
+        if (!isRecord(rawMessage)) continue;
+        const key = safeId(rawMessage.id) || `message-${index}`;
+        const node = parseMessageNode(rawMessage, key);
+        if (!node.parentId && nodes.length > 0) node.parentId = nodes.at(-1).messageId;
+        nodes.push(node);
+        byId.set(node.key, node);
+        byId.set(node.messageId, node);
+      }
+    } else {
+      return null;
     }
     let currentId = safeId(root.current_node)
       || safeId(isRecord(root.current_node) ? root.current_node.id : null);
@@ -1657,6 +1968,11 @@
       ["assistant_model_slug", safeIdentifier(fields?.assistantModel)],
     ].filter(([, value]) => value);
     const effectiveModel = responseCandidates[0]?.[1] ?? null;
+    const requestedEffectiveDifferent = Boolean(
+      requestedModel
+      && effectiveModel
+      && normalizeModelForComparison(requestedModel) !== normalizeModelForComparison(effectiveModel),
+    );
     const distinct = new Set(responseCandidates.map(([, value]) => normalizeModelForComparison(value)).filter(Boolean));
     let status = "insufficient";
     if (distinct.size > 1) {
@@ -1666,12 +1982,59 @@
         ? "matched"
         : "different";
     }
+
+    const fastConvo = typeof fields?.fastConvo === "boolean" ? fields.fastConvo : null;
+    const thinkingEffort = safeIdentifier(fields?.thinkingEffort);
+    const reasoningDuration = Number(fields?.reasoningDurationSec);
+    const reasoningDurationSec = Number.isFinite(reasoningDuration) && reasoningDuration >= 0
+      ? round(reasoningDuration, 3)
+      : null;
+    const highEffort = /^(?:high|max|xhigh|extra[ _-]?high)$/i.test(thinkingEffort || "");
+    const shortHighEffort = highEffort && reasoningDurationSec != null && reasoningDurationSec <= 60;
+    const diagnosticSignals = [];
+    if (fastConvo === true) diagnosticSignals.push({
+      code: "fast_convo",
+      severity: "notice",
+      summary: "服务端元数据标记 fast_convo=true；该字段本身不等于限流。",
+    });
+    if (requestedEffectiveDifferent) diagnosticSignals.push({
+      code: "requested_resolved_mismatch",
+      severity: "warning",
+      summary: "请求模型与优先响应模型字段不同。",
+    });
+    if (status === "field_conflict") diagnosticSignals.push({
+      code: "response_field_conflict",
+      severity: "warning",
+      summary: "多个响应侧模型字段互相冲突。",
+    });
+    if (shortHighEffort) diagnosticSignals.push({
+      code: "short_high_effort_reasoning",      severity: "notice",
+      summary: "高 thinking effort 下观测到较短 reasoning 时长；时长本身不能证明受限。",
+    });
+
+    let diagnosticStatus = "insufficient";
+    if (fastConvo === true && (requestedEffectiveDifferent || shortHighEffort)) {
+      diagnosticStatus = "restriction_suspected";
+    } else if (requestedEffectiveDifferent || status === "field_conflict") {
+      diagnosticStatus = "route_anomaly";
+    } else if (fastConvo === true) {
+      diagnosticStatus = "fast_path_observed";
+    } else if (status === "matched") {
+      diagnosticStatus = "consistent";
+    }
+
     return {
       status,
+      diagnosticStatus,
       requestedModel,
       effectiveModel,
+      fastConvo,
+      thinkingEffort,
+      reasoningDurationSec,
+      diagnosticSignals,
+      anomalous: diagnosticStatus === "restriction_suspected" || diagnosticStatus === "route_anomaly",
       responseCandidates: responseCandidates.map(([field, value]) => ({ field, value })),
-      caveat: "Response metadata is diagnostic evidence, not proof of the physical inference backend.",
+      caveat: "These are heuristic page-visible signals. fast_convo, response fields, or short duration alone do not prove hidden restriction or the physical inference backend.",
     };
   }
 
@@ -1698,6 +2061,7 @@
       ? observation.source
       : null;
     if (!captureId || !source) return null;
+    const reasoningDuration = Number(observation.reasoningDurationSec);
     const sanitized = {
       schemaVersion: 1,
       captureId,
@@ -1715,6 +2079,16 @@
       resolvedModel: safeIdentifier(observation.resolvedModel),
       defaultModel: safeIdentifier(observation.defaultModel),
       thinkingEffort: safeIdentifier(observation.thinkingEffort),
+      fastConvo: typeof observation.fastConvo === "boolean" ? observation.fastConvo : null,
+      requestedModelExperience: safeIdentifier(observation.requestedModelExperience),
+      turnUseCase: safeIdentifier(observation.turnUseCase),
+      turnMode: safeIdentifier(observation.turnMode),
+      reasoningStatus: safeIdentifier(observation.reasoningStatus),
+      reasoningDurationSec: Number.isFinite(reasoningDuration)
+        && reasoningDuration >= 0
+        && reasoningDuration <= 24 * 60 * 60
+        ? round(reasoningDuration, 3)
+        : null,
       requestId: safeId(observation.requestId),
       conversationId: safeId(observation.conversationId),
       planType: safeIdentifier(observation.planType),
@@ -1786,6 +2160,7 @@
     detectCycleTransitions,
     classifyCycleTransition,
     classifyResetCreditsState,
+    classifyAccountLimitState,
     analysisCycleKey,
     normalizeCycleEvents,
     sanitizeCycleEvent,
@@ -1793,6 +2168,9 @@
     emptyRouteFields,
     estimateCreditCapacity,
     extractLimitWindows,
+    extractUsageLimitWindows,
+    extractAccountLimitSummary,
+    extractConversationLimitSummary,
     extractPlanHints,
     extractResetCreditDetails,
     extractResetCreditSummary,
@@ -1802,6 +2180,7 @@
     mergeRouteFields,
     mergeRouteObservations,
     mergeResetCreditsState,
+    mergeAccountLimitState,
     normalizeDailyRows,
     normalizeModelForComparison,
     normalizeSettings,
@@ -1817,6 +2196,7 @@
     rowsToCsv,
     safeIdentifier,
     sanitizeCreditObservation,
+    sanitizeAccountLimitObservation,
     sanitizeDailyRow,
     sanitizeLimitWindow,
     sanitizeRouteObservation,

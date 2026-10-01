@@ -11,7 +11,7 @@
     <div class="hero-copy">
       <p class="eyebrow">LOCAL · PASSIVE · UNOFFICIAL</p>
       <h1>Muofu AI Quota Lens</h1>
-      <p>ChatGPT Codex 周用量、重置机会、套餐参考与模型路由元数据</p>
+      <p>ChatGPT Codex 周用量、重置机会、套餐参考与路由/执行元数据</p>
     </div>
     <div class="hero-actions">
       <button id="openAnalytics" class="primary" type="button">打开 / 重载 Usage</button>
@@ -31,6 +31,7 @@
       <article class="summary"><span>被动捕获</span><strong id="summaryCapture">—</strong><small id="summaryCaptureRange">等待 Usage</small></article>
       <article class="summary"><span>周期状态</span><strong id="summaryCycleState">—</strong><small id="summaryCycleDetail">等待周期证据</small></article>
       <article class="summary"><span>Usage limit reset</span><strong id="summaryResetCredits">—</strong><small id="summaryResetCreditExpiry">尚未观察</small></article>
+      <article class="summary"><span>账户 / 会话限制</span><strong id="summaryAccountLimit">—</strong><small id="summaryAccountLimitDetail">尚未观察</small></article>
     </section>
 
     <section class="panel settings-panel">
@@ -74,7 +75,7 @@
           <fieldset>
             <legend>本地观察</legend>
             <label class="check"><input id="captureCredits" type="checkbox"> 被动观察 Credits 响应</label>
-            <label class="check"><input id="routeInspection" type="checkbox"> 保存路由元数据观察</label>
+            <label class="check"><input id="routeInspection" type="checkbox"> 保存路由/执行元数据观察</label>
             <label class="check"><input id="showOverlay" type="checkbox"> 在 ChatGPT 页面显示浮层</label>
           </fieldset>
           <div class="form-actions">
@@ -114,9 +115,56 @@
             <div><dt>日期覆盖</dt><dd id="capturedDateRange">—</dd></div>
             <div><dt>按日记录数</dt><dd id="capturedRowCount">—</dd></div>
           </dl>
-          <p class="note">扩展不读取 ChatGPT Bearer Token，不构造 Authorization 头，也不会主动调用 `/backend-api/wham/*`。若页面只加载周分组，请切回“按日”视图后重载。</p>
+          <p class="note">扩展不读取 ChatGPT Bearer Token，不构造 Authorization 头，也不会主动调用 `/backend-api/wham/*`。新版页面若只加载主限额而不加载按日 Analytics，将显示直接限额但不进行 Credits 容量推算。</p>
         </div>
       </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">ACCOUNT &amp; CONVERSATION LIMITS</p>
+          <h2>账户与会话限制状态</h2>
+          <p>Usage 与 conversation/init 的最新白名单状态分别覆盖更新，用于区分主额度硬限制、超额限制、功能封锁与模型限制。</p>
+        </div>
+        <span id="accountLimitObserved" class="count">尚未观察</span>
+      </div>
+      <div class="reset-credit-panel">
+        <div>
+          <h3>当前限制判定</h3>
+          <div id="accountLimitHealth" class="health neutral" role="status">尚未观察到限制状态</div>
+        </div>
+        <dl class="reset-credit-facts">
+          <div><dt>allowed</dt><dd id="accountAllowed">—</dd></div>
+          <div><dt>limit_reached</dt><dd id="accountLimitReached">—</dd></div>
+          <div><dt>主额度 used_percent</dt><dd id="accountUsedPercent">—</dd></div>
+          <div><dt>主额度重置</dt><dd id="accountResetAt">—</dd></div>
+          <div><dt>rate_limit_reached_type</dt><dd id="accountRateLimitType">—</dd></div>
+          <div><dt>overage_limit_reached</dt><dd id="accountOverage">—</dd></div>
+          <div><dt>spend_control.reached</dt><dd id="accountSpendControl">—</dd></div>
+        </dl>
+      </div>
+      <div class="settings-layout">
+        <div class="reference-card">
+          <h3>显式限制 / 封锁</h3>
+          <dl class="reference-details">
+            <div><dt>blocked_features</dt><dd id="blockedFeatures">—</dd></div>
+            <div><dt>model_limits</dt><dd id="modelLimits">—</dd></div>
+            <div><dt>默认模型</dt><dd id="accountDefaultModel">—</dd></div>
+            <div><dt>intended default</dt><dd id="accountIntendedDefaultModel">—</dd></div>
+          </dl>
+        </div>
+        <div class="reference-card">
+          <h3>可用性与剩余额度</h3>
+          <dl class="reference-details">
+            <div><dt>model_usage</dt><dd id="modelUsage">—</dd></div>
+            <div><dt>limits_progress</dt><dd id="limitsProgress">—</dd></div>
+            <div><dt>Usage 观测</dt><dd id="accountUsageObservedAt">—</dd></div>
+            <div><dt>conversation/init 观测</dt><dd id="accountConversationObservedAt">—</dd></div>
+          </dl>
+        </div>
+      </div>
+      <p class="note">状态只反映页面实际返回的字段。非空 model_limits 表示服务端报告了模型限制项，但与 blocked_features 的显式封锁语义分开；limits_progress 的 remaining=0 会作为能力余量耗尽信号。</p>
     </section>
 
     <section class="panel">
@@ -246,12 +294,12 @@
 
     <section class="panel">
       <div class="panel-heading">
-        <div><p class="eyebrow">ROUTE EVIDENCE</p><h2>模型路由观察</h2><p>只展示请求/响应中可见的白名单模型元数据，不包含聊天正文。</p></div>
+        <div><p class="eyebrow">ROUTE &amp; EXECUTION EVIDENCE</p><h2>路由与执行观察</h2><p>展示请求/响应中的白名单模型与执行元数据，用组合信号做启发式诊断；不包含聊天正文。</p></div>
         <span id="routeCount" class="count">0 条记录</span>
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>时间</th><th>请求模型</th><th>响应优先字段</th><th>判定</th><th>resolved</th><th>server</th><th>assistant</th><th>套餐字段</th><th>来源</th></tr></thead>
+          <thead><tr><th>时间</th><th>请求模型</th><th>响应优先字段</th><th>诊断</th><th>模型字段</th><th>fast_convo</th><th>thinking</th><th>reasoning</th><th>experience</th><th>use case</th><th>resolved</th><th>server</th><th>assistant</th><th>套餐字段</th><th>来源</th></tr></thead>
           <tbody id="routeRows"></tbody>
         </table>
       </div>
@@ -264,7 +312,7 @@
         <div><h3>纯被动捕获</h3><p>只复制 Usage 页面本来就收到的限额、按日用量和重置机会响应；不读取令牌、不发起用量请求、不轮询。</p></div>
         <div><h3>额度估计</h3><p>优先使用同一周期不同时间点的 Credits 增量除以已用百分比增量；周期边界日的单点比例只作暂定显示，不直接触发额度变化判断。</p></div>
         <div><h3>重置与基线</h3><p>自然重置、主动重置和套餐切换会切断同周期计算；个人历史基线只使用兼容套餐与兼容窗口的最近周期。</p></div>
-        <div><h3>路由证据</h3><p>`resolved_model_slug`、服务器元数据与助手消息模型字段互相冲突时单独标记；字段不同不自动等于降级。</p></div>
+        <div><h3>路由与执行证据</h3><p>综合 `resolved_model_slug`、`fast_convo`、thinking effort 与 reasoning 时长等信号；任何单一字段或短时长都不自动等于隐性限制。</p></div>
       </div>
     </section>
   </main>

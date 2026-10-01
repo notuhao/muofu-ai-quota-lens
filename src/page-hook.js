@@ -54,6 +54,11 @@
     if (sanitized) post("credit-observation", sanitized);
   }
 
+  function emitAccountLimit(observation) {
+    const sanitized = Core.sanitizeAccountLimitObservation(observation);
+    if (sanitized) post("account-limit-observation", sanitized);
+  }
+
   function emitHookStatus(status, extra = {}) {
     post("hook-status", {
       schemaVersion: 2,
@@ -116,6 +121,9 @@
           groupBy: url.searchParams.get("group_by"),
         };
       }
+      if (method === "POST" && path === "/backend-api/conversation/init") {
+        return { kind: "conversation_limits", endpointPath: path };
+      }
       if (method === "POST" && /^\/backend-api\/(?:f\/)?conversations?$/.test(path)) {
         return { kind: "conversation_stream", conversationId: null };
       }
@@ -173,9 +181,18 @@
           observedAt,
           pageUrl: safePageUrl(),
           endpointPath: endpoint.endpointPath,
-          windows: Core.extractLimitWindows(Core.isRecord(body) ? body : {}),
+          windows: Core.extractUsageLimitWindows(Core.isRecord(body) ? body : {}),
           planHints: Core.extractPlanHints(body),
           resetCredits: Core.extractResetCreditSummary(body),
+        });
+        const accountLimits = Core.extractAccountLimitSummary(body);
+        if (accountLimits) emitAccountLimit({
+          kind: "usage_limits",
+          sessionId,
+          observedAt,
+          pageUrl: safePageUrl(),
+          endpointPath: endpoint.endpointPath,
+          ...accountLimits,
         });
       } else if (endpoint.kind === "reset_credits") {
         const details = Core.extractResetCreditDetails(body);
@@ -204,6 +221,29 @@
       emitHookStatus("credit-parse-failed", {
         endpointKind: endpoint.kind,
         errorCode: error instanceof Error ? error.message : "credit_parse_failed",
+      });
+    }
+  }
+
+  async function inspectConversationLimitResponse(response, endpoint) {
+    if (!preferences.routeInspection) return;
+    try {
+      const raw = await readBoundedText(response, MAX_USAGE_BYTES);
+      const body = JSON.parse(raw);
+      const limits = Core.extractConversationLimitSummary(body);
+      if (!limits) return;
+      emitAccountLimit({
+        kind: "conversation_limits",
+        sessionId,
+        observedAt: now(),
+        pageUrl: safePageUrl(),
+        endpointPath: endpoint.endpointPath,
+        ...limits,
+      });
+    } catch (error) {
+      emitHookStatus("account-limit-parse-failed", {
+        endpointKind: endpoint.kind,
+        errorCode: error instanceof Error ? error.message : "account_limit_parse_failed",
       });
     }
   }
@@ -238,6 +278,13 @@
       fields.serverModel,
       fields.resolvedModel,
       fields.defaultModel,
+      fields.thinkingEffort,
+      fields.fastConvo,
+      fields.requestedModelExperience,
+      fields.turnUseCase,
+      fields.turnMode,
+      fields.reasoningStatus,
+      fields.reasoningDurationSec,
       fields.requestId,
       fields.conversationId,
       fields.planType,
@@ -250,6 +297,9 @@
       || fields.serverModel
       || fields.resolvedModel
       || fields.defaultModel
+      || fields.fastConvo === true
+      || fields.reasoningStatus
+      || fields.reasoningDurationSec != null
       || fields.requestId,
     );
   }
@@ -339,7 +389,9 @@
     const creditEndpoint = endpoint.kind === "credits_usage"
       || endpoint.kind === "credits_daily"
       || endpoint.kind === "reset_credits";
-    const routeEndpoint = endpoint.kind === "conversation_stream" || endpoint.kind === "conversation_record";
+    const routeEndpoint = endpoint.kind === "conversation_stream"
+      || endpoint.kind === "conversation_record"
+      || endpoint.kind === "conversation_limits";
     if (endpoint.kind === "other"
       || (creditEndpoint && !preferences.captureCredits)
       || (routeEndpoint && !preferences.routeInspection)) {
@@ -374,6 +426,8 @@
       const clone = response.clone();
       if (creditEndpoint) {
         void inspectCreditResponse(clone, endpoint);
+      } else if (endpoint.kind === "conversation_limits") {
+        void inspectConversationLimitResponse(clone, endpoint);
       } else if (endpoint.kind === "conversation_stream") {
         const contentType = clone.headers.get("content-type") || "";
         const inspection = contentType.includes("text/event-stream")
@@ -392,7 +446,7 @@
             errorCode: error instanceof Error ? error.message : "stream_parse_failed",
           });
         });
-      } else {
+      } else if (endpoint.kind === "conversation_record") {
         void inspectJsonResponse(
           clone,
           captureId,

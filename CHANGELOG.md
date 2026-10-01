@@ -6,6 +6,10 @@
 
 ### Added
 
+- 路由诊断加入 `fast_convo`、requested model experience、turn use case / mode、reasoning 状态与时长，并使用组合信号提示“疑似受限”。
+- 新增账户/会话限制最新状态：主 rate-limit 的 `allowed` / `limit_reached` / `used_percent`、reached type、overage / spend-control 状态，以及 `conversation/init` 的 blocked features、model limits、limits progress 和模型可用性摘要。
+- 浮层折叠状态下仍显示账户硬限制/能力限制、路由异常、额度异常与 reset-credit 临期/过期提示。
+- 独立保存最新主限额摘要；即使当前页面没有按日 Analytics，也能显示已用比例与重置时间。
 - 被动观察 ChatGPT 页面已加载的 reset credits 数量、最近已观测到期时间与详情新鲜度；不提供 consume 操作。
 - 添加公共贡献指南、Issue forms、Pull Request 模板和私密漏洞报告入口。
 - 添加可复现构建、Mozilla linter、持续集成和 GitHub draft Release 流程。
@@ -13,12 +17,17 @@
 ### Changed
 
 - 产品更名为 **Muofu AI Quota Lens**，仓库和 Release 制品统一使用 `muofu-ai-quota-lens` 命名。
-- Usage 首选入口更新为 `/codex/settings/usage`，继续识别 `/codex/cloud/settings/analytics` 作为兼容路径。
+- Usage 首选入口保持为当前 `/codex/settings/usage`；捕获完成语义改为“主限额可独立完成，按日 Credits 为增强证据”，并继续识别 `/codex/cloud/settings/analytics` 作为兼容路径。
+- `/wham/usage` 按当前响应语义只从顶层 `rate_limit` 提取主窗口，顶层 `additional_rate_limits` / ChatPass 不再参与主周额度选择。
+- 会话记录兼容当前 `messages[]` 结构；HAR 从长任务中途开始录制时仍可沿当前 turn 解析可见元数据。
 - GitHub Release 明确区分未签名开发制品、审计用源码包与 Mozilla 签名版本。
 - 发布者专用投递材料与公共源码、源码 ZIP 和 Release 解耦。
 
 ### Fixed
 
+- 修复新版 `/wham/usage` 多额度域被递归混合后，reserve / ChatPass 等附加窗口可能误选为主周额度的问题。
+- 修复新 Usage 页面没有加载旧按日 Analytics 时，扩展持续显示“未完成捕获”而无法展示已经观测到的主限额的问题。
+- 修复后到 hook 状态可能把已经捕获的直接主限额状态覆盖回“等待”的竞态。
 - 窗口时长或结束时间发生显著重排时，即使 `cycleStart` 未变化也会切断同周期增量和异常比较。
 - source ZIP 改用显式脚本白名单，避免本地 Python 缓存或其他忽略文件混入发布制品。
 
