@@ -142,11 +142,14 @@ check('lockfile matches package metadata and exact web-ext version', () => {
   assert.doesNotMatch(read('package-lock.json'), /npmmirror/i);
 });
 check('package declares MIT', () => assert.equal(pkg.license, 'MIT'));
-check('stable Gecko extension id is present', () => {
-  assert.equal(manifest.browser_specific_settings.gecko.id, '{af9b8e49-7c4e-4d45-b902-4db62df2f74d}');
+check('stable Gecko extension id matches the published AMO listing', () => {
+  // Must stay identical to the id AMO has on file; a different id would be
+  // validated and signed as a brand-new add-on instead of an update.
+  assert.equal(manifest.browser_specific_settings.gecko.id, '{2a08b3bc-001c-4bc0-80ce-8a242caf224d}');
 });
-check('minimum Firefox version is 140+', () => {
-  assert.ok(Number.parseFloat(manifest.browser_specific_settings.gecko.strict_min_version) >= 140);
+check('minimum Firefox version covers the published AMO listing', () => {
+  const minimum = Number.parseFloat(manifest.browser_specific_settings.gecko.strict_min_version);
+  assert.ok(minimum >= 142, `strict_min_version ${minimum} is below the published 142.0`);
 });
 check('AMO data declaration is exactly none', () => {
   assert.deepEqual(manifest.browser_specific_settings.gecko.data_collection_permissions, { required: ['none'] });

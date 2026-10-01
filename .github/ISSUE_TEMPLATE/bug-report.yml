@@ -15,7 +15,7 @@ body:
     attributes:
       label: 扩展版本
       description: 可在扩展管理页或弹窗底部查看。
-      placeholder: 例如 0.3.0
+      placeholder: 例如 0.4.0
     validations:
       required: true
 
@@ -23,7 +23,7 @@ body:
     id: firefox-version
     attributes:
       label: Firefox 版本
-      placeholder: 例如 140.0
+      placeholder: 例如 142.0
     validations:
       required: true
 
