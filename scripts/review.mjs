@@ -100,14 +100,35 @@ check('lint wrapper suppresses update checks and only allows the known Android w
   assert.match(lintWrapper, /report\.errors/);
 });
 check('source packaging copies an explicit script allowlist', () => {
-  const packageScript = read('scripts/package.sh');
-  assert.doesNotMatch(packageScript, /\btests scripts\b/);
-  for (const script of ['archive_audit.py', 'lint-addon.mjs', 'package.sh', 'review.mjs']) {
+  const packageScript = read('scripts/package.mjs');
+  for (const script of ['archive-audit.mjs', 'lint-addon.mjs', 'package.mjs', 'review.mjs', 'zip.mjs']) {
     assert.match(packageScript, new RegExp(`scripts/${script.replace('.', '\\.')}`));
   }
-  const archiveAudit = read('scripts/archive_audit.py');
-  assert.match(archiveAudit, /"__pycache__"/);
-  assert.match(archiveAudit, /"\.pyc"/);
+  const archiveAudit = read('scripts/archive-audit.mjs');
+  assert.match(archiveAudit, /'__pycache__'/);
+  assert.match(archiveAudit, /'\.pyc'/);
+});
+check('release toolchain runs on Node without bash, zip, or python', () => {
+  const scripts = pkg.scripts || {};
+  assert.equal(scripts.package, 'node scripts/package.mjs');
+  assert.equal(scripts.audit, 'node scripts/archive-audit.mjs --release-dir release');
+  const combined = Object.values(scripts).join('\n');
+  assert.doesNotMatch(combined, /\bbash\b|\bpython3?\b|\bzip\b|\bunzip\b|\bsha256sum\b/);
+  assert.equal(existsSync(path.join(root, 'scripts/package.sh')), false);
+  assert.equal(existsSync(path.join(root, 'scripts/archive_audit.py')), false);
+  for (const workflow of ['ci', 'release']) {
+    // CI still needs a package manager to install web-ext; it just no longer
+    // needs a Unix zip/sha256sum/python toolchain to build the artifacts.
+    assert.doesNotMatch(read(`.github/workflows/${workflow}.yml`), /python3|apt-get|brew install/);
+  }
+});
+check('deterministic packaging derives timestamps from SOURCE_DATE_EPOCH only', () => {
+  const packageScript = read('scripts/package.mjs');
+  assert.match(packageScript, /sourceDateEpoch/);
+  assert.doesNotMatch(packageScript, /Date\.now|new Date\(\)|mtime/i);
+  const zipLib = read('scripts/zip.mjs');
+  assert.match(zipLib, /SOURCE_DATE_EPOCH|toDosTimestamp/);
+  assert.doesNotMatch(zipLib, /Date\.now|new Date\(\)/);
 });
 check('lockfile matches package metadata and exact web-ext version', () => {
   assert.equal(lock.lockfileVersion, 3);

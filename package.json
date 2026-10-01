@@ -17,8 +17,8 @@
     "review": "node scripts/review.mjs",
     "check": "npm test && npm run review",
     "lint:addon": "node scripts/lint-addon.mjs",
-    "package": "bash scripts/package.sh",
-    "audit": "python3 scripts/archive_audit.py --release-dir release"
+    "package": "node scripts/package.mjs",
+    "audit": "node scripts/archive-audit.mjs --release-dir release"
   },
   "engines": {
     "node": ">=22"
