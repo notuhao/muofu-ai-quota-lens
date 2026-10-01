@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-10-01
+
 ### Added
 
 - 路由诊断加入 `fast_convo`、requested model experience、turn use case / mode、reasoning 状态与时长，并使用组合信号提示“疑似受限”。
@@ -16,6 +18,8 @@
 
 ### Changed
 
+- 最低 Firefox 版本与 AMO 已发布的 0.3.0 对齐为 142.0；Gecko ID 与已发布版本保持一致，使本次发布是现有 listing 的更新而非新扩展。
+- 打包与归档审计改为仓库内的 Node 脚本，不再需要 bash、系统 `zip`/`unzip`、`sha256sum` 或 Python，可在 Windows、Linux 与 macOS 上直接出包。
 - 产品更名为 **Muofu AI Quota Lens**，仓库和 Release 制品统一使用 `muofu-ai-quota-lens` 命名。
 - Usage 首选入口保持为当前 `/codex/settings/usage`；捕获完成语义改为“主限额可独立完成，按日 Credits 为增强证据”，并继续识别 `/codex/cloud/settings/analytics` 作为兼容路径。
 - `/wham/usage` 按当前响应语义只从顶层 `rate_limit` 提取主窗口，顶层 `additional_rate_limits` / ChatPass 不再参与主周额度选择。
@@ -29,7 +33,7 @@
 - 修复新 Usage 页面没有加载旧按日 Analytics 时，扩展持续显示“未完成捕获”而无法展示已经观测到的主限额的问题。
 - 修复后到 hook 状态可能把已经捕获的直接主限额状态覆盖回“等待”的竞态。
 - 窗口时长或结束时间发生显著重排时，即使 `cycleStart` 未变化也会切断同周期增量和异常比较。
-- source ZIP 改用显式脚本白名单，避免本地 Python 缓存或其他忽略文件混入发布制品。
+- source ZIP 改用显式脚本白名单，避免本地 Python 缓存或其他忽略文件混入发布制品；该白名单现在由 `scripts/package.mjs` 维护。
 
 ### Security
 
